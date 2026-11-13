@@ -33,7 +33,9 @@ svg { width: 20px; height: 20px; flex-shrink: 0; }
 .brand img { width: 36px; height: 36px; }
 .session-summary { display: flex; align-items: center; gap: 12px; margin: 35px 8px 26px; }
 .session-summary strong { font-size: 14px; font-weight: 500; }
+.session-summary > div:last-child { min-width: 0; overflow-wrap: anywhere; }
 .disconnected { display: block; font-size: 12px; color: #f87171; }
+.connected { display: block; font-size: 12px; color: #86efac; }
 .avatar { width: 40px; height: 40px; display: grid; place-items: center; background: #303030; border-radius: 50%; flex-shrink: 0; color: #c5c6ca; }
 .avatar svg { width: 25px; height: 25px; }
 .nav-item { display: flex; gap: 13px; align-items: center; width: 100%; padding: 11px 9px; text-align: left; font-size: 15px; font-weight: 500; opacity: .46; }
@@ -68,6 +70,14 @@ textarea { resize: vertical; min-height: 100px; }
 .sign-in { width: 100%; height: 40px; display: flex; align-items: center; justify-content: center; position: relative; background: var(--accent); font-weight: 600; color: white; }
 .sign-in:disabled { opacity: .55; }
 .sign-in svg { position: absolute; left: 13px; width: 18px; height: 18px; }
+.cancel-login { width: 100%; min-height: 38px; margin-top: 12px; border: 1px solid var(--border); }
+.cancel-login:hover { background: var(--raised); }
+.session-details { margin-top: 32px; text-align: center; }
+.session-details > strong { display: block; overflow-wrap: anywhere; }
+.steam-id { color: var(--muted); font-family: monospace; overflow-wrap: anywhere; }
+.session-details .service-status { justify-content: center; }
+.form-options label:has(input:disabled) { color: var(--muted); }
+.login-tabs button:disabled { opacity: .5; }
 .qr-unavailable { height: 235px; max-width: 235px; margin: 0 auto 16px; border: 1px dashed var(--border); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--muted); }
 .qr-unavailable svg { width: 48px; height: 48px; }
 .remember-qr { font-size: 13px; }

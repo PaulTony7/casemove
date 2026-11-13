@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 settings = { path = "../crates/settings" }
 app-commands = { path = "../crates/app-commands" }
+steam-core = { path = "../crates/steam-core" }
 
 [dev-dependencies]
 tempfile = "3"

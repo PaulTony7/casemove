@@ -22,11 +22,12 @@ Conventions:
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `steam_login(params: LoginParams) -> LoginResult` | `login` + `login-reply` | `LoginParams { account, password?, remember, guard_code?, shared_secret?, clientjstoken?, refresh_token? }` covers all 5 legacy strategies | ☐ |
+| `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + optional Guard code or mobile approval; errors reject the invoke. Other legacy strategies and live-account parity verification pending | ◐ |
+| `steam_session() -> Option<SteamProfile>` | Renderer auth state | Account and SteamID only; restores UI state after a frontend reload. Connection-loss events pending | ◐ |
 | `steam_start_qr_login(remember) -> LoginResult` | `startQRLogin` + `login-reply` | QR challenge pushed as `login:qr_challenge` event | ☐ |
 | `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | **Legacy bug**: preload sends `cancelQRLogin`, main listens `qrLogin:cancel` — never fires. Fixed by one name | ☐ |
 | `steam_force_login()` | `forceLogin` | Retry GC attach after `playingElsewhere`/timeout race | ☐ |
-| `steam_sign_out()` | `signOut` | Tears down session; must leave listener counts unchanged (S6 gate) | ☐ |
+| `steam_sign_out()` | `signOut` | Drops the retained connection or cancels pending login. Offline cancellation/relogin tests pass; live S6 gate pending | ◐ |
 | `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
 | `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | Kill local Steam client (Windows only in legacy) | ☐ |
 

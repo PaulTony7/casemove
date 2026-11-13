@@ -17,13 +17,25 @@ performance, and first-class support for Steam + third-party market APIs.
 - First launch imports legacy preferences and account metadata from the native
   OS configuration directory, without modifying the legacy store. Existing Rust
   settings are preserved. Imported accounts require fresh authentication.
-- This is **not login or inventory parity**. Steam authentication, QR sessions,
-  GC inventory, transfers, and authenticated pages remain unimplemented. Sign-in
-  and authenticated navigation are disabled rather than simulated. The native
-  titlebar is retained for now; cross-platform packaging is not yet verified.
-- Next vertical slice: complete Phase 0 Steam/GC validation, then connect a real
-  login session and inventory to this shell. Keep legacy code until its matching
-  workflow and characterization tests pass.
+- The regular login form now calls `steam-vent` for password authentication with
+  a supplied email/device Guard code or Steam mobile approval. A single native
+  session owner retains the connection, bounds login to 120 seconds, rejects
+  overlapping logins, and cancels pending authentication on sign-out. The UI
+  displays session identity and supports cancellation and sign-out.
+- Native password/code buffers are zeroized on drop; no credentials or tokens
+  are returned in session replies or persisted by this login slice. Remember,
+  shared-secret, QR, and browser-token login remain disabled.
+- This is **not login or inventory parity**. The production integration has
+  offline tests for lifecycle, Guard selection, and error mapping, plus browser
+  UI checks using a synthetic IPC test double. A live-account login has not been
+  verified for this integration. GC inventory, transfers, connection-loss
+  events, and authenticated pages remain unimplemented. The native titlebar is
+  retained; cross-platform packaging is not yet verified.
+- Next vertical slice: attach the CS2 GC to the retained connection and surface
+  real inventory and connection events. The Phase 0 report in
+  `docs/metrics/spike-b.md` records the earlier real-account spike; do not treat
+  that as end-to-end verification of the production UI. Keep legacy code until
+  its matching workflow and characterization tests pass.
 
 ## Strategy
 
