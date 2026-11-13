@@ -1,6 +1,6 @@
 use crate::inventory::InventoryView;
 use app_commands::{
-    InventorySnapshot, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_SESSION,
+    InventorySnapshot, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_LOGIN_SAVED, STEAM_SESSION,
     STEAM_SIGN_OUT, SavedAccount, SteamProfile,
 };
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
@@ -41,6 +41,11 @@ struct RemoveAccountArgs {
 #[derive(Serialize)]
 struct LoginArgs {
     params: PasswordLoginParams,
+}
+
+#[derive(Serialize)]
+struct SavedLoginArgs {
+    account: String,
 }
 
 #[component]
@@ -135,6 +140,31 @@ pub fn App() -> impl IntoView {
             }
         });
     };
+
+    let login_saved = Callback::new(move |account: String| {
+        if !desktop.get_untracked() || login_busy.get_untracked() || session_busy.get_untracked()
+            || profile.get_untracked().is_some() { return; }
+        set_username.set(account.clone());
+        set_method.set(LoginMethod::Regular);
+        set_login_error.set(String::new());
+        set_login_busy.set(true);
+        if let Some(field) = password_input.get_untracked() { field.set_value(""); }
+        if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
+        attempt.update(|value| *value += 1);
+        let current_attempt = attempt.get_untracked();
+        spawn_local(async move {
+            let result = match serde_wasm_bindgen::to_value(&SavedLoginArgs { account }) {
+                Ok(args) => desktop_command(STEAM_LOGIN_SAVED, args).await,
+                Err(_) => Err("Could not prepare the saved-login request.".into()),
+            };
+            if attempt.get_untracked() != current_attempt { return; }
+            match result {
+                Ok(value) => complete_login(value),
+                Err(error) => set_login_error.set(error),
+            }
+            set_login_busy.set(false);
+        });
+    });
 
     let login = move |event: SubmitEvent| {
         event.prevent_default();
@@ -393,9 +423,15 @@ pub fn App() -> impl IntoView {
                         </div>
                     </Show>
                     <ul class="account-list">
-                        <For each=move || accounts.get() key=|account| account.username.clone() children=move |account| {
+                        <For each=move || accounts.get() key=|account| (account.username.clone(), account.has_saved_login, account.display_name.clone()) children=move |account| {
                             let selected_name = account.username.clone();
                             let removed_name = account.username.clone();
+                            let login_name = account.username.clone();
+                            let saved_login = account.has_saved_login.then(|| view! {
+                                <button class="icon-button" title="Sign in with saved login" aria-label=format!("Sign in as {login_name}")
+                                    disabled=move || login_busy.get() || session_busy.get() || profile.get().is_some()
+                                    on:click=move |_| login_saved.run(login_name.clone())><Icon icon=icondata::LuLogIn/></button>
+                            });
                             view! {
                                 <li class="saved-account">
                                     <div class="avatar"><Icon icon=icondata::LuUserRound/></div>
@@ -403,6 +439,7 @@ pub fn App() -> impl IntoView {
                                         set_username.set(selected_name.clone());
                                         set_method.set(LoginMethod::Regular);
                                     }><strong>{account.display_name}</strong><span>{account.username}</span></button>
+                                    {saved_login}
                                     <button class="icon-button delete-account" aria-label="Remove saved account" title="Remove saved account"
                                         disabled=move || login_busy.get() || session_busy.get()
                                         on:click=move |_| set_pending_removal.set(Some(removed_name.clone()))><Icon icon=icondata::LuTrash2/></button>

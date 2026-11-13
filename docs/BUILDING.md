@@ -52,6 +52,9 @@ times out after 120 seconds and can be cancelled. Password and code fields clear
 on submission. Remember for later stores only the Steam refresh token in the
 OS keyring; account JSON and IPC replies contain metadata, not tokens. Secure
 storage failures leave the Steam session signed in and display a warning.
+Use the Sign in with saved login icon beside a remembered account to connect
+without re-entering a password. Migrated metadata without a new keyring token
+still requires password login; missing or rejected tokens produce an error.
 Removing a remembered account also removes its keyring token. Shared-secret,
 QR, and browser-token login are not implemented yet. Real-account remembered
 login and OS-keyring verification remain manual checks.

@@ -32,7 +32,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] List, select, and remove saved-account metadata; selection fills the username.
 - [x] Native keyring wrapper integrated with opt-in remembered login.
 - [x] Remember login using refresh tokens stored in the OS keyring (initial implementation; live verification pending).
-- [ ] Sign in using a saved account without entering password/Guard again.
+- [x] Sign in using a saved account without entering password/Guard again (initial implementation; live verification pending).
 - [ ] Shared-secret/TOTP login.
 - [ ] QR challenge, approval, cancellation, and retry workflow.
 - [ ] Browser-token login and input validation.
