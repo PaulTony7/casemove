@@ -195,19 +195,41 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
     }
 
     pub fn sign_out(&self) -> Result<(), LoginError> {
-        let (connection, cancel) = {
+        self.sign_out_generation().map(|_| ())
+    }
+
+    pub fn in_generation<Output>(
+        &self,
+        generation: u64,
+        operation: impl FnOnce() -> Output,
+    ) -> Result<Output, LoginError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| LoginError::SessionUnavailable)?;
+        if session.generation != generation || session.connected.is_none() {
+            return Err(LoginError::Cancelled);
+        }
+        let output = operation();
+        drop(session);
+        Ok(output)
+    }
+
+    pub fn sign_out_generation(&self) -> Result<u64, LoginError> {
+        let (connection, cancel, generation) = {
             let mut session = self
                 .session
                 .lock()
                 .map_err(|_| LoginError::SessionUnavailable)?;
+            let generation = session.generation;
             session.generation += 1;
             session.connecting = false;
             self.changed.send_replace(session.generation);
-            (session.connected.take(), session.cancel.take())
+            (session.connected.take(), session.cancel.take(), generation)
         };
         drop(cancel);
         drop(connection);
-        Ok(())
+        Ok(generation)
     }
 }
 
@@ -404,5 +426,25 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_mutate_state_after_relogin() {
+        let manager = manager();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let first = manager
+            .with_connection(|_, generation| async move { generation })
+            .await
+            .unwrap();
+        assert_eq!(manager.sign_out_generation().unwrap(), first);
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let mutated = AtomicBool::new(false);
+        assert_eq!(
+            manager.in_generation(first, || mutated.store(true, Ordering::SeqCst)),
+            Err(LoginError::Cancelled)
+        );
+        assert!(!mutated.load(Ordering::SeqCst));
     }
 }

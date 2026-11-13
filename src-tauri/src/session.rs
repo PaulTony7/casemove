@@ -41,7 +41,9 @@ pub async fn steam_sign_out(
     session: tauri::State<'_, DesktopSession>,
     inventory: tauri::State<'_, crate::inventory::InventoryState>,
 ) -> Result<(), String> {
-    session.sign_out().map_err(|error| error.to_string())?;
-    inventory.clear().await;
+    let generation = session
+        .sign_out_generation()
+        .map_err(|error| error.to_string())?;
+    inventory.clear(generation).await;
     Ok(())
 }
