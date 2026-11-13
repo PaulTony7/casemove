@@ -2,3 +2,10 @@
 name = "gc-cs2"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+protobuf = "3.5"
+steam-vent-proto-csgo = "=0.5.2"
+steam-vent = "=0.5.0"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }

@@ -1768,6 +1768,13 @@ dependencies = [
 [[package]]
 name = "gc-cs2"
 version = "0.1.0"
+dependencies = [
+ "protobuf",
+ "steam-vent",
+ "steam-vent-proto-csgo",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "gdk"
@@ -5352,6 +5359,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62682aa488b34d33f1045f9e4ee3c33ceef709e878524188dea4431cfe4f2131"
 dependencies = [
  "protobuf",
+]
+
+[[package]]
+name = "steam-vent-proto-csgo"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc9a1e885f80157ea5f6f8bdc3f0ac80b0782efd2d11306257515710fbcad203"
+dependencies = [
+ "steam-vent-proto-common",
 ]
 
 [[package]]
