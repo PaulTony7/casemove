@@ -88,11 +88,13 @@ pub fn parse_inventory(welcome: &CMsgClientWelcome) -> Result<Vec<EconItem>, Inv
         return Err(InventoryError::MissingCache);
     }
     let mut items = BTreeMap::new();
+    let mut has_inventory_cache = false;
     for cache in &welcome.outofdate_subscribed_caches {
         for object in &cache.objects {
             if object.type_id() != ECON_ITEM_TYPE {
                 continue;
             }
+            has_inventory_cache = true;
             for bytes in &object.object_data {
                 if bytes.len() > MAX_ITEM_BYTES || items.len() >= MAX_ITEMS {
                     return Err(InventoryError::PayloadLimit);
@@ -124,6 +126,9 @@ pub fn parse_inventory(welcome: &CMsgClientWelcome) -> Result<Vec<EconItem>, Inv
                 }
             }
         }
+    }
+    if !has_inventory_cache {
+        return Err(InventoryError::MissingCache);
     }
     let mut items: Vec<_> = items.into_values().collect();
     items.sort_by_key(|item| (item.inventory_position, item.id));
@@ -202,6 +207,13 @@ mod tests {
     fn ignores_unrelated_cache_types_and_limits_item_payloads() {
         let mut message = welcome(vec![vec![0xff]]);
         message.outofdate_subscribed_caches[0].objects[0].type_id = Some(2);
+        assert_eq!(parse_inventory(&message), Err(InventoryError::MissingCache));
+        message.outofdate_subscribed_caches[0]
+            .objects
+            .push(SubscribedType {
+                type_id: Some(ECON_ITEM_TYPE),
+                ..Default::default()
+            });
         assert!(parse_inventory(&message).unwrap().is_empty());
         assert_eq!(
             parse_inventory(&welcome(vec![vec![0; MAX_ITEM_BYTES + 1]])),

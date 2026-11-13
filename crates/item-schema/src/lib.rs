@@ -6,30 +6,50 @@ use std::collections::HashMap;
 pub struct ItemSchema {
     schema: Value,
     translations: HashMap<String, String>,
+    image_urls: HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct ItemDescription {
     pub name: String,
     pub image_path: Option<String>,
+    pub image_url: Option<String>,
 }
 
 impl ItemSchema {
     pub fn bundled() -> Result<Self, serde_json::Error> {
-        Self::from_json(
+        let mut schema = Self::from_json(
             include_str!(
                 "../../../legacy/src/main/helpers/classes/steam/items/itemsBackupFiles/items_game.json"
             ),
             include_str!(
                 "../../../legacy/src/main/helpers/classes/steam/items/itemsBackupFiles/csgo_english.json"
             ),
-        )
+        )?;
+        let collections: HashMap<String, HashMap<String, Value>> = serde_json::from_str(
+            include_str!("../../../legacy/src/main/helpers/classes/steam/backup/collections.json"),
+        )?;
+        for collection in collections.into_values() {
+            for (name, entry) in collection {
+                if let Some(mut url) = entry
+                    .get("imageURL")
+                    .and_then(Value::as_str)
+                    .and_then(|value| url::Url::parse(value).ok())
+                    && url.host_str() == Some("media.steampowered.com")
+                    && url.set_scheme("https").is_ok()
+                {
+                    schema.image_urls.insert(name, url.to_string());
+                }
+            }
+        }
+        Ok(schema)
     }
 
     fn from_json(schema: &str, translations: &str) -> Result<Self, serde_json::Error> {
         Ok(Self {
             schema: serde_json::from_str(schema)?,
             translations: serde_json::from_str(translations)?,
+            image_urls: HashMap::new(),
         })
     }
 
@@ -72,6 +92,7 @@ impl ItemSchema {
             return ItemDescription {
                 name: format!("Unknown item ({definition_index})"),
                 image_path: None,
+                image_url: None,
             };
         };
         let mut name = self
@@ -110,7 +131,12 @@ impl ItemSchema {
                 ));
             }
         }
-        ItemDescription { name, image_path }
+        let image_url = self.image_urls.get(&name).cloned();
+        ItemDescription {
+            name,
+            image_path,
+            image_url,
+        }
     }
 }
 
@@ -154,5 +180,23 @@ mod tests {
         let schema = ItemSchema::bundled().unwrap();
         assert_eq!(schema.describe(7, None).name, "AK-47");
         assert_eq!(schema.describe(1201, None).name, "Storage Unit");
+        assert!(schema.describe(7, None).image_url.is_none());
+        let paint = schema.schema["paint_kits"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, value)| value["name"] == "hy_mesh_safetyorange")
+            .unwrap()
+            .0
+            .parse()
+            .unwrap();
+        let painted = schema.describe(7, Some(paint));
+        assert_eq!(painted.name, "AK-47 | Safety Net");
+        assert!(
+            painted
+                .image_url
+                .unwrap()
+                .ends_with(".f4ee68bc3bbd972ded65ec36b66259199b7fafb7.png")
+        );
     }
 }

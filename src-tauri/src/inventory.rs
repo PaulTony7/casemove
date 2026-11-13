@@ -53,9 +53,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         definition_index: item.definition_index,
         name: description.name,
         custom_name: item.custom_name,
-        image_url: description.image_path.map(|path| {
-            format!("https://cdn.cloudflare.steamstatic.com/apps/730/icons/{path}.png")
-        }),
+        image_url: description.image_url,
         quantity: item.quantity,
         rarity: item.rarity,
         position: item.inventory_position,
@@ -89,7 +87,13 @@ pub async fn refresh_inventory(
                 state.take();
             }
             let items = match state.as_ref() {
-                Some((_, client)) => client.refresh().await.map_err(|error| error.to_string())?,
+                Some((_, client)) => match client.refresh().await {
+                    Ok(items) => items,
+                    Err(error) => {
+                        state.take();
+                        return Err(error.to_string());
+                    }
+                },
                 None => {
                     let (client, items) = InventoryClient::connect(&connection)
                         .await
