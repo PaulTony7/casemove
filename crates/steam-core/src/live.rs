@@ -74,15 +74,7 @@ impl SteamTransport for SteamClient {
         let connection = if let Some(token) = credentials.refresh_token.as_deref() {
             Connection::access(&servers, &credentials.account, token)
                 .await
-                .map_err(|error| match error {
-                    ConnectionError::AccessToken(_) => LoginError::SavedLoginRejected,
-                    error => match login_error(error) {
-                        LoginError::CredentialsRejected | LoginError::GuardRequired => {
-                            LoginError::SavedLoginRejected
-                        }
-                        error => error,
-                    },
-                })?
+                .map_err(saved_login_error)?
         } else {
             Connection::login(
                 &servers,
@@ -100,6 +92,22 @@ impl SteamTransport for SteamClient {
             generation: 0,
         };
         Ok((connection, profile))
+    }
+}
+
+fn saved_login_error(error: ConnectionError) -> LoginError {
+    match error {
+        ConnectionError::AccessToken(_)
+        | ConnectionError::Network(NetworkError::ApiError(EResult::Expired | EResult::Revoked))
+        | ConnectionError::LoginError(steam_vent::LoginError::Unknown(
+            EResult::Expired | EResult::Revoked,
+        )) => LoginError::SavedLoginRejected,
+        error => match login_error(error) {
+            LoginError::CredentialsRejected | LoginError::GuardRequired => {
+                LoginError::SavedLoginRejected
+            }
+            error => error,
+        },
     }
 }
 
@@ -157,6 +165,32 @@ mod tests {
         assert_eq!(
             login_error(ConnectionError::Network(NetworkError::Timeout)),
             LoginError::TimedOut
+        );
+    }
+
+    #[test]
+    fn expired_saved_tokens_request_password_login_but_network_errors_stay_distinct() {
+        for result in [EResult::Expired, EResult::Revoked] {
+            assert_eq!(
+                saved_login_error(ConnectionError::Network(NetworkError::ApiError(result))),
+                LoginError::SavedLoginRejected
+            );
+            assert_eq!(
+                saved_login_error(ConnectionError::LoginError(
+                    steam_vent::LoginError::Unknown(result)
+                )),
+                LoginError::SavedLoginRejected
+            );
+        }
+        assert_eq!(
+            saved_login_error(ConnectionError::Network(NetworkError::Timeout)),
+            LoginError::TimedOut
+        );
+        assert_eq!(
+            saved_login_error(ConnectionError::LoginError(
+                steam_vent::LoginError::RateLimited
+            )),
+            LoginError::RateLimited
         );
     }
 
