@@ -6,6 +6,25 @@ core + Leptos UI application, with no JavaScript in the new codebase.
 Motivation: maintainability/modularity, reliability bug fixes, modernized stack,
 performance, and first-class support for Steam + third-party market APIs.
 
+## Current Progress (2026-11-13)
+
+- The Windows Tauri app builds and packages; it no longer opens the greeting
+  template. The Leptos signed-out screen follows the legacy charcoal palette,
+  Casemove branding, navigation, Steam login methods, and saved-account sidebar.
+- Saved-account metadata is loaded through Rust commands. Selecting an account
+  fills the username; removal is confirmed and persisted. Passwords and stored
+  credential blobs are never returned to the frontend.
+- First launch imports legacy preferences and account metadata from the native
+  OS configuration directory, without modifying the legacy store. Existing Rust
+  settings are preserved. Imported accounts require fresh authentication.
+- This is **not login or inventory parity**. Steam authentication, QR sessions,
+  GC inventory, transfers, and authenticated pages remain unimplemented. Sign-in
+  and authenticated navigation are disabled rather than simulated. The native
+  titlebar is retained for now; cross-platform packaging is not yet verified.
+- Next vertical slice: complete Phase 0 Steam/GC validation, then connect a real
+  login session and inventory to this shell. Keep legacy code until its matching
+  workflow and characterization tests pass.
+
 ## Strategy
 
 - **Dual-app strangler**: the new Tauri app lives in this repo and grows

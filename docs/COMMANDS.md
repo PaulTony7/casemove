@@ -59,8 +59,8 @@ Conventions:
 | `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | | ☐ |
 | `settings_get(key) -> Value` | `electron-store-get` + `-reply+randomKey` | Legacy appends a random key to the reply channel to dodge `once` collisions — `invoke` makes this unnecessary | ☐ |
 | `settings_set(key, value)` | `electron-store-set` | | ☐ |
-| `store_get_accounts() -> Vec<Account>` | `electron-store-getAccountDetails` + `-reply` | Saved accounts with position; tokens come from OS keyring, not the store | ☐ |
-| `store_delete_account(account)` | `electron-store-deleteAccountDetails` | | ☐ |
+| `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name metadata only; no secrets returned. Avatar/position parity pending | ◐ |
+| `store_delete_account(username) -> Vec<SavedAccount>` | `electron-store-deleteAccountDetails` | Removes profile metadata and returns the updated list; keyring cleanup awaits login integration | ◐ |
 | `store_set_account_position(account, index)` | `electron-store-setAccountPosition` | | ☐ |
 | `check_update() -> UpdateInfo` | `needUpdate` + `needUpdate-reply` | Legacy caches a broken `gitHub` flag and replies `[false,…]` on error | ☐ |
 

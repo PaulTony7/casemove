@@ -149,6 +149,18 @@ pub fn legacy_store_candidates() -> Vec<std::path::PathBuf> {
     ]
 }
 
+#[cfg(target_os = "windows")]
+fn dirs_config() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_config() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join("Library/Application Support"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn dirs_config() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
