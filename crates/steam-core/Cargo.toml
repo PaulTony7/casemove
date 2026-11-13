@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 thiserror = "2"
+steam-vent = "=0.5.0"
+zeroize = "1"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
+steam-vent-proto-steam = "=0.5.2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "test-util"] }

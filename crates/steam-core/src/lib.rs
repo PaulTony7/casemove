@@ -1,11 +1,23 @@
 //! Steam connection lifecycle: login strategies, session, CM events.
 
+mod live;
+
+pub use live::SteamClient;
+
 use std::{future::Future, sync::Mutex, time::Duration};
 
 pub struct Credentials {
     pub account: String,
     pub password: String,
     pub guard_code: Option<String>,
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.password.zeroize();
+        self.guard_code.zeroize();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +38,10 @@ pub enum LoginError {
     GuardRequired,
     #[error("Steam could not verify the Guard code. Try again.")]
     GuardRejected,
+    #[error("Steam rejected the username or password.")]
+    CredentialsRejected,
+    #[error("Steam is limiting login attempts. Wait before trying again.")]
+    RateLimited,
     #[error("Steam login was cancelled.")]
     Cancelled,
     #[error("Steam login timed out. Check your connection and try again.")]
@@ -191,7 +207,7 @@ mod tests {
             Ok((
                 TestConnection(self.dropped.clone()),
                 Profile {
-                    account: credentials.account,
+                    account: credentials.account.clone(),
                     steam_id: "76561198000000000".into(),
                 },
             ))
