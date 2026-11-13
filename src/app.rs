@@ -47,6 +47,7 @@ struct LoginArgs {
 pub fn App() -> impl IntoView {
     let (method, set_method) = signal(LoginMethod::Regular);
     let (username, set_username) = signal(String::new());
+    let (remember, set_remember) = signal(false);
     let (desktop, set_desktop) = signal(false);
     let (profile, set_profile) = signal(None::<SteamProfile>);
     let (login_error, set_login_error) = signal(String::new());
@@ -124,6 +125,17 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let complete_login = move |value: SteamProfile| {
+        set_login_error.set(value.notice.clone().unwrap_or_default());
+        set_profile.set(Some(value));
+        spawn_local(async move {
+            match desktop_command("store_get_accounts", JsValue::NULL).await {
+                Ok(accounts) => set_accounts.set(accounts),
+                Err(error) => set_account_error.set(error),
+            }
+        });
+    };
+
     let login = move |event: SubmitEvent| {
         event.prevent_default();
         if !desktop.get_untracked()
@@ -149,6 +161,7 @@ pub fn App() -> impl IntoView {
                 account: username.get_untracked().trim().to_owned(),
                 password,
                 guard_code,
+                remember: remember.get_untracked(),
             },
         };
         set_login_error.set(String::new());
@@ -164,7 +177,7 @@ pub fn App() -> impl IntoView {
                 return;
             }
             match result {
-                Ok(value) => set_profile.set(Some(value)),
+                Ok(value) => complete_login(value),
                 Err(error) => set_login_error.set(error),
             }
             set_login_busy.set(false);
@@ -327,7 +340,9 @@ pub fn App() -> impl IntoView {
                                                 disabled=move || login_busy.get() || session_busy.get()/>
                                         </div>
                                         <div class="form-options">
-                                            <label title="Saved-token login is not available yet"><input type="checkbox" disabled/>"Remember for later"</label>
+                                            <label><input type="checkbox" prop:checked=move || remember.get()
+                                                disabled=move || login_busy.get() || session_busy.get()
+                                                on:change=move |event| set_remember.set(event_target_checked(&event))/>"Remember for later"</label>
                                             <label title="Shared-secret login is not available yet">"Show secret field"<input type="checkbox" disabled/></label>
                                         </div>
                                     }.into_any(),

@@ -71,18 +71,33 @@ impl SteamTransport for SteamClient {
                 .as_ref()
                 .map(|code| Zeroizing::new(code.clone())),
         };
-        let connection = Connection::login(
-            &servers,
-            &credentials.account,
-            &credentials.password,
-            NullGuardDataStore,
-            handler,
-        )
-        .await
-        .map_err(login_error)?;
+        let connection = if let Some(token) = credentials.refresh_token.as_deref() {
+            Connection::access(&servers, &credentials.account, token)
+                .await
+                .map_err(|error| match error {
+                    ConnectionError::AccessToken(_) => LoginError::SavedLoginRejected,
+                    error => match login_error(error) {
+                        LoginError::CredentialsRejected | LoginError::GuardRequired => {
+                            LoginError::SavedLoginRejected
+                        }
+                        error => error,
+                    },
+                })?
+        } else {
+            Connection::login(
+                &servers,
+                &credentials.account,
+                &credentials.password,
+                NullGuardDataStore,
+                handler,
+            )
+            .await
+            .map_err(login_error)?
+        };
         let profile = Profile {
             account: credentials.account.clone(),
             steam_id: connection.steam_id().steam64().to_string(),
+            generation: 0,
         };
         Ok((connection, profile))
     }

@@ -10,6 +10,7 @@ pub struct Credentials {
     pub account: String,
     pub password: String,
     pub guard_code: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 impl Drop for Credentials {
@@ -17,6 +18,7 @@ impl Drop for Credentials {
         use zeroize::Zeroize;
         self.password.zeroize();
         self.guard_code.zeroize();
+        self.refresh_token.zeroize();
     }
 }
 
@@ -24,6 +26,7 @@ impl Drop for Credentials {
 pub struct Profile {
     pub account: String,
     pub steam_id: String,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -42,6 +45,12 @@ pub enum LoginError {
     GuardRejected,
     #[error("Steam rejected the username or password.")]
     CredentialsRejected,
+    #[error("The saved Steam login is invalid or expired. Sign in with your password again.")]
+    SavedLoginRejected,
+    #[error("No saved login is available. Sign in with your password again.")]
+    SavedLoginMissing,
+    #[error("Secure credential storage is unavailable.")]
+    SecureStorageUnavailable,
     #[error("Steam is limiting login attempts. Wait before trying again.")]
     RateLimited,
     #[error("Steam login was cancelled.")]
@@ -109,9 +118,13 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
     }
 
     pub async fn login(&self, credentials: Credentials) -> Result<Profile, LoginError> {
-        if credentials.account.trim().is_empty() || credentials.password.is_empty() {
-            return Err(LoginError::InvalidCredentials);
-        }
+        self.login_with(async move { Ok(credentials) }).await
+    }
+
+    pub async fn login_with<Loader>(&self, credentials: Loader) -> Result<Profile, LoginError>
+    where
+        Loader: Future<Output = Result<Credentials, LoginError>>,
+    {
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
         let generation = {
             let mut session = self
@@ -133,10 +146,23 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
             session: &self.session,
             generation,
         };
-        let (connection, profile) = tokio::select! {
+        let operation = async {
+            let credentials = credentials.await?;
+            if credentials.account.trim().is_empty()
+                || (credentials.password.is_empty()
+                    && credentials
+                        .refresh_token
+                        .as_ref()
+                        .is_none_or(|token| token.is_empty()))
+            {
+                return Err(LoginError::InvalidCredentials);
+            }
+            self.transport.login(credentials).await
+        };
+        let (connection, mut profile) = tokio::select! {
             biased;
             _ = cancelled => return Err(LoginError::Cancelled),
-            result = tokio::time::timeout(self.login_timeout, self.transport.login(credentials)) => {
+            result = tokio::time::timeout(self.login_timeout, operation) => {
                 result.map_err(|_| LoginError::TimedOut)??
             }
         };
@@ -147,6 +173,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
         if session.generation != generation {
             return Err(LoginError::Cancelled);
         }
+        profile.generation = generation;
         session.connected = Some((connection, profile.clone()));
         Ok(profile)
     }
@@ -269,6 +296,7 @@ mod tests {
                 Profile {
                     account: credentials.account.clone(),
                     steam_id: "76561198000000000".into(),
+                    generation: 0,
                 },
             ))
         }
@@ -279,6 +307,7 @@ mod tests {
             account: "test-account".into(),
             password: "test-password".into(),
             guard_code: None,
+            refresh_token: None,
         }
     }
 
@@ -446,5 +475,32 @@ mod tests {
             Err(LoginError::Cancelled)
         );
         assert!(!mutated.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn saved_token_login_does_not_require_a_password_and_still_owns_a_session() {
+        let manager = manager();
+        let mut input = credentials();
+        input.password.clear();
+        input.refresh_token = Some("synthetic-refresh-token".into());
+        manager.transport.ready.notify_one();
+        assert!(manager.login(input).await.is_ok());
+        assert!(manager.profile().unwrap().is_some());
+        manager.sign_out().unwrap();
+        assert!(manager.profile().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_pending_token_lookup_never_starts_a_late_login() {
+        let manager = manager();
+        let mut login =
+            Box::pin(manager.login_with(std::future::pending::<Result<Credentials, LoginError>>()));
+        tokio::select! { biased; _ = &mut login => panic!("lookup should wait"), _ = std::future::ready(()) => {} }
+        assert_eq!(manager.login(credentials()).await, Err(LoginError::Busy));
+        manager.sign_out().unwrap();
+        assert_eq!(login.await, Err(LoginError::Cancelled));
+        assert!(manager.profile().unwrap().is_none());
+        manager.transport.ready.notify_one();
+        assert!(manager.login(credentials()).await.is_ok());
     }
 }

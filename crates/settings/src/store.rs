@@ -1,5 +1,5 @@
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::PathBuf;
@@ -24,9 +24,7 @@ impl SettingsStore {
         let path = path.into();
         let data = match fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content)?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Value::Object(Map::new())
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
             Err(err) => return Err(err.into()),
         };
         Ok(Self { path, data })
@@ -42,6 +40,7 @@ impl SettingsStore {
 
     pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> Result<(), Error> {
         let value = serde_json::to_value(value)?;
+        let previous = self.data.clone();
         let parts: Vec<&str> = key.split('.').collect();
         let (last, parents) = parts.split_last().expect("empty settings key");
 
@@ -63,7 +62,11 @@ impl SettingsStore {
             .as_object_mut()
             .expect("just checked")
             .insert((*last).to_string(), value);
-        self.save()
+        if let Err(error) = self.save() {
+            self.data = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn data(&self) -> &Value {
@@ -98,7 +101,10 @@ mod tests {
 
         let reopened = SettingsStore::open(&path).unwrap();
         assert_eq!(reopened.get::<bool>("fastmove"), Some(false));
-        assert_eq!(reopened.get::<String>("pricing.currency"), Some("EUR".into()));
+        assert_eq!(
+            reopened.get::<String>("pricing.currency"),
+            Some("EUR".into())
+        );
         assert_eq!(reopened.get::<u32>("deeply.nested.key"), Some(42));
         assert_eq!(reopened.get::<String>("pricing.missing"), None);
     }
@@ -108,5 +114,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SettingsStore::open(dir.path().join("nope.json")).unwrap();
         assert!(store.data().as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_write_does_not_publish_unsaved_settings_in_memory() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::open(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(store.set("account.alice.hasSavedLogin", true).is_err());
+        assert_eq!(store.get::<bool>("account.alice.hasSavedLogin"), None);
     }
 }

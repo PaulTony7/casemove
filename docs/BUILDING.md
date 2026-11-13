@@ -49,8 +49,12 @@ have the Tauri IPC bridge, so saved accounts and Steam login are only available
 in the desktop app. Regular login accepts a username/password and an optional
 Steam Guard code; Steam may instead request approval in its mobile app. Login
 times out after 120 seconds and can be cancelled. Password and code fields clear
-on submission. This slice does not persist credentials or support saved-token,
-shared-secret, QR, or browser-token login.
+on submission. Remember for later stores only the Steam refresh token in the
+OS keyring; account JSON and IPC replies contain metadata, not tokens. Secure
+storage failures leave the Steam session signed in and display a warning.
+Removing a remembered account also removes its keyring token. Shared-secret,
+QR, and browser-token login are not implemented yet. Real-account remembered
+login and OS-keyring verification remain manual checks.
 
 After signing in, open Inventory and choose Connect to CS2. Close running games
 first: the GC handshake marks this account as playing CS2. The read-only snapshot

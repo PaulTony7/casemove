@@ -22,9 +22,12 @@ performance, and first-class support for Steam + third-party market APIs.
   session owner retains the connection, bounds login to 120 seconds, rejects
   overlapping logins, and cancels pending authentication on sign-out. The UI
   displays session identity and supports cancellation and sign-out.
-- Native password/code buffers are zeroized on drop; no credentials or tokens
-  are returned in session replies or persisted by this login slice. Remember,
-  shared-secret, QR, and browser-token login remain disabled.
+- Owned native password/code/token buffers are zeroized on drop. Remember for
+  later persists refresh tokens only in the OS keyring, with secret-free account
+  metadata and rollback on cancellation or metadata failure. Saved-account token
+  lookup is bounded by the login timeout and cancellation. Keyring/real-account
+  verification remains pending; shared-secret, QR, and browser-token login are
+  not implemented yet.
 - Read-only inventory now uses a retained CS2 GC client and a bounded welcome
   cache parser. Connecting is explicit because it marks the Steam account as
   playing CS2. Requests time out after 30 seconds; sign-out cancels in-flight

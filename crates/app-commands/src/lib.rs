@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct SavedAccount {
     pub username: String,
     pub display_name: String,
+    #[serde(default)]
+    pub has_saved_login: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -16,6 +18,8 @@ pub struct PasswordLoginParams {
     pub account: String,
     pub password: String,
     pub guard_code: Option<String>,
+    #[serde(default)]
+    pub remember: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -23,9 +27,12 @@ pub struct PasswordLoginParams {
 pub struct SteamProfile {
     pub account: String,
     pub steam_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 pub const STEAM_LOGIN: &str = "steam_login";
+pub const STEAM_LOGIN_SAVED: &str = "steam_login_saved";
 pub const STEAM_SESSION: &str = "steam_session";
 pub const STEAM_SIGN_OUT: &str = "steam_sign_out";
 pub const REFRESH_INVENTORY: &str = "refresh_inventory";

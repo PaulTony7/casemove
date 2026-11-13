@@ -22,7 +22,8 @@ Conventions:
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + optional Guard code or mobile approval; errors reject the invoke. Other legacy strategies and live-account parity verification pending | ◐ |
+| `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + optional Guard/mobile approval; remember opt-in saves a native refresh token to the keyring. Optional notice reports secure-save failure without failing authentication. Live parity pending | ◐ |
+| `steam_login_saved(account) -> SteamProfile` | Saved-account login | Account name only in IPC; reads refresh token from native keyring inside cancellable login lifecycle. Live verification pending | ◐ |
 | `steam_session() -> Option<SteamProfile>` | Renderer auth state | Account and SteamID only; restores UI state after a frontend reload. Connection-loss events pending | ◐ |
 | `steam_start_qr_login(remember) -> LoginResult` | `startQRLogin` + `login-reply` | QR challenge pushed as `login:qr_challenge` event | ☐ |
 | `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | **Legacy bug**: preload sends `cancelQRLogin`, main listens `qrLogin:cancel` — never fires. Fixed by one name | ☐ |
@@ -61,7 +62,7 @@ Conventions:
 | `settings_get(key) -> Value` | `electron-store-get` + `-reply+randomKey` | Legacy appends a random key to the reply channel to dodge `once` collisions — `invoke` makes this unnecessary | ☐ |
 | `settings_set(key, value)` | `electron-store-set` | | ☐ |
 | `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name metadata only; no secrets returned. Avatar/position parity pending | ◐ |
-| `store_delete_account(username) -> Vec<SavedAccount>` | `electron-store-deleteAccountDetails` | Removes profile metadata and returns the updated list; keyring cleanup awaits login integration | ◐ |
+| `store_delete_account(username) -> Vec<SavedAccount>` | `electron-store-deleteAccountDetails` | Removes keyring token and canonical account metadata; rollback restores the previous token if metadata deletion fails | ◐ |
 | `store_set_account_position(account, index)` | `electron-store-setAccountPosition` | | ☐ |
 | `check_update() -> UpdateInfo` | `needUpdate` + `needUpdate-reply` | Legacy caches a broken `gitHub` flag and replies `[false,…]` on error | ☐ |
 

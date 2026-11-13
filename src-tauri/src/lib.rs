@@ -26,6 +26,7 @@ pub fn run() {
             accounts::store_get_accounts,
             accounts::store_delete_account,
             session::steam_login,
+            session::steam_login_saved,
             session::steam_session,
             session::steam_sign_out,
             inventory::refresh_inventory
