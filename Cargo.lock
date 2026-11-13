@@ -662,6 +662,8 @@ name = "casemove"
 version = "0.1.0"
 dependencies = [
  "app-commands",
+ "gc-cs2",
+ "item-schema",
  "serde",
  "serde_json",
  "settings",
@@ -670,6 +672,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

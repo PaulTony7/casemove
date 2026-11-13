@@ -28,3 +28,29 @@ pub struct SteamProfile {
 pub const STEAM_LOGIN: &str = "steam_login";
 pub const STEAM_SESSION: &str = "steam_session";
 pub const STEAM_SIGN_OUT: &str = "steam_sign_out";
+pub const REFRESH_INVENTORY: &str = "refresh_inventory";
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryItem {
+    pub id: String,
+    pub definition_index: u32,
+    pub name: String,
+    pub custom_name: Option<String>,
+    pub image_url: Option<String>,
+    pub quantity: u32,
+    pub rarity: u32,
+    pub position: u32,
+    pub wear: Option<f64>,
+    pub wear_name: Option<String>,
+    pub paint_seed: Option<u32>,
+    pub stat_trak: bool,
+    pub is_storage_unit: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventorySnapshot {
+    pub steam_id: String,
+    pub items: Vec<InventoryItem>,
+}

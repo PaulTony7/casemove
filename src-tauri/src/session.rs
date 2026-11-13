@@ -1,7 +1,7 @@
 use app_commands::{PasswordLoginParams, SteamProfile};
 use steam_core::{Credentials, Profile, SessionManager, SteamClient};
 
-type DesktopSession = SessionManager<SteamClient>;
+pub(crate) type DesktopSession = SessionManager<SteamClient>;
 
 fn profile_reply(profile: Profile) -> SteamProfile {
     SteamProfile {
@@ -37,6 +37,11 @@ pub fn steam_session(
 }
 
 #[tauri::command]
-pub fn steam_sign_out(session: tauri::State<'_, DesktopSession>) -> Result<(), String> {
-    session.sign_out().map_err(|error| error.to_string())
+pub async fn steam_sign_out(
+    session: tauri::State<'_, DesktopSession>,
+    inventory: tauri::State<'_, crate::inventory::InventoryState>,
+) -> Result<(), String> {
+    session.sign_out().map_err(|error| error.to_string())?;
+    inventory.clear().await;
+    Ok(())
 }

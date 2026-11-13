@@ -168,7 +168,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
     ) -> Result<Output, LoginError>
     where
         Transport::Connection: Clone,
-        Operation: FnOnce(Transport::Connection) -> Work,
+        Operation: FnOnce(Transport::Connection, u64) -> Work,
         Work: Future<Output = Output>,
     {
         let mut changed = self.changed.subscribe();
@@ -184,7 +184,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
         tokio::select! {
             biased;
             _ = changed.changed() => Err(LoginError::Cancelled),
-            output = async { operation(connection).await } => {
+            output = async { operation(connection, generation).await } => {
                 let session = self.session.lock().map_err(|_| LoginError::SessionUnavailable)?;
                 if session.generation != generation {
                     return Err(LoginError::Cancelled);
@@ -349,12 +349,12 @@ mod tests {
     async fn connection_work_requires_a_signed_in_session() {
         let manager = manager();
         assert_eq!(
-            manager.with_connection(|_| async { 42 }).await,
+            manager.with_connection(|_, _| async { 42 }).await,
             Err(LoginError::NotConnected)
         );
         manager.transport.ready.notify_one();
         manager.login(credentials()).await.unwrap();
-        assert_eq!(manager.with_connection(|_| async { 42 }).await, Ok(42));
+        assert_eq!(manager.with_connection(|_, _| async { 42 }).await, Ok(42));
     }
 
     #[tokio::test]
@@ -362,7 +362,7 @@ mod tests {
         let manager = manager();
         manager.transport.ready.notify_one();
         manager.login(credentials()).await.unwrap();
-        let mut work = Box::pin(manager.with_connection(|_| std::future::pending::<()>()));
+        let mut work = Box::pin(manager.with_connection(|_, _| std::future::pending::<()>()));
         tokio::select! { biased; _ = &mut work => panic!("work should wait"), _ = std::future::ready(()) => {} }
         manager.sign_out().unwrap();
         assert_eq!(work.await, Err(LoginError::Cancelled));
@@ -374,7 +374,7 @@ mod tests {
         manager.transport.ready.notify_one();
         manager.login(credentials()).await.unwrap();
         let ready = Notify::new();
-        let mut work = Box::pin(manager.with_connection(|_| async {
+        let mut work = Box::pin(manager.with_connection(|_, _| async {
             ready.notified().await;
             "old inventory"
         }));
@@ -385,5 +385,24 @@ mod tests {
         ready.notify_one();
         assert_eq!(work.await, Err(LoginError::Cancelled));
         assert!(manager.profile().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn relogin_has_a_distinct_connection_generation_for_cache_ownership() {
+        let manager = manager();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let first = manager
+            .with_connection(|_, generation| async move { generation })
+            .await
+            .unwrap();
+        manager.sign_out().unwrap();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let second = manager
+            .with_connection(|_, generation| async move { generation })
+            .await
+            .unwrap();
+        assert_ne!(first, second);
     }
 }
