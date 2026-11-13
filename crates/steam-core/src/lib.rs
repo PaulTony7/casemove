@@ -34,6 +34,8 @@ pub enum LoginError {
     Busy,
     #[error("Sign out before connecting another Steam account.")]
     AlreadyConnected,
+    #[error("Sign in to Steam first.")]
+    NotConnected,
     #[error("Enter your Steam Guard code and try again.")]
     GuardRequired,
     #[error("Steam could not verify the Guard code. Try again.")]
@@ -72,6 +74,7 @@ pub struct SessionManager<Transport: SteamTransport> {
     transport: Transport,
     session: Mutex<Session<Transport::Connection>>,
     login_timeout: Duration,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 struct LoginAttempt<'a, Connection> {
@@ -101,6 +104,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
                 cancel: None,
             }),
             login_timeout,
+            changed: tokio::sync::watch::channel(0).0,
         }
     }
 
@@ -158,6 +162,38 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
             .map(|(_, profile)| profile.clone()))
     }
 
+    pub async fn with_connection<Output, Operation, Work>(
+        &self,
+        operation: Operation,
+    ) -> Result<Output, LoginError>
+    where
+        Transport::Connection: Clone,
+        Operation: FnOnce(Transport::Connection) -> Work,
+        Work: Future<Output = Output>,
+    {
+        let mut changed = self.changed.subscribe();
+        let (generation, connection) = {
+            let session = self
+                .session
+                .lock()
+                .map_err(|_| LoginError::SessionUnavailable)?;
+            let (connection, _) = session.connected.as_ref().ok_or(LoginError::NotConnected)?;
+            changed.borrow_and_update();
+            (session.generation, connection.clone())
+        };
+        tokio::select! {
+            biased;
+            _ = changed.changed() => Err(LoginError::Cancelled),
+            output = async { operation(connection).await } => {
+                let session = self.session.lock().map_err(|_| LoginError::SessionUnavailable)?;
+                if session.generation != generation {
+                    return Err(LoginError::Cancelled);
+                }
+                Ok(output)
+            }
+        }
+    }
+
     pub fn sign_out(&self) -> Result<(), LoginError> {
         let (connection, cancel) = {
             let mut session = self
@@ -166,6 +202,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
                 .map_err(|_| LoginError::SessionUnavailable)?;
             session.generation += 1;
             session.connecting = false;
+            self.changed.send_replace(session.generation);
             (session.connected.take(), session.cancel.take())
         };
         drop(cancel);
@@ -183,6 +220,7 @@ mod tests {
     };
     use tokio::sync::Notify;
 
+    #[derive(Clone)]
     struct TestConnection(Arc<AtomicBool>);
 
     impl Drop for TestConnection {
@@ -305,5 +343,47 @@ mod tests {
         );
         manager.transport.ready.notify_one();
         assert!(manager.login(credentials()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn connection_work_requires_a_signed_in_session() {
+        let manager = manager();
+        assert_eq!(
+            manager.with_connection(|_| async { 42 }).await,
+            Err(LoginError::NotConnected)
+        );
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        assert_eq!(manager.with_connection(|_| async { 42 }).await, Ok(42));
+    }
+
+    #[tokio::test]
+    async fn sign_out_cancels_pending_connection_work() {
+        let manager = manager();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let mut work = Box::pin(manager.with_connection(|_| std::future::pending::<()>()));
+        tokio::select! { biased; _ = &mut work => panic!("work should wait"), _ = std::future::ready(()) => {} }
+        manager.sign_out().unwrap();
+        assert_eq!(work.await, Err(LoginError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn old_connection_reply_cannot_cross_a_relogin() {
+        let manager = manager();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        let ready = Notify::new();
+        let mut work = Box::pin(manager.with_connection(|_| async {
+            ready.notified().await;
+            "old inventory"
+        }));
+        tokio::select! { biased; _ = &mut work => panic!("work should wait"), _ = std::future::ready(()) => {} }
+        manager.sign_out().unwrap();
+        manager.transport.ready.notify_one();
+        manager.login(credentials()).await.unwrap();
+        ready.notify_one();
+        assert_eq!(work.await, Err(LoginError::Cancelled));
+        assert!(manager.profile().unwrap().is_some());
     }
 }
