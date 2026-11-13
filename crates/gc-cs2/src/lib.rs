@@ -14,6 +14,32 @@ const ECON_ITEM_TYPE: i32 = 1;
 const MAX_ITEMS: usize = 100_000;
 const MAX_ITEM_BYTES: usize = 256 * 1024;
 
+fn client_hello() -> CMsgClientHello {
+    CMsgClientHello {
+        version: Some(2_000_244),
+        client_session_need: Some(0),
+        client_launcher: Some(0),
+        steam_launcher: Some(0),
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    #[test]
+    fn hello_matches_the_legacy_cs2_protocol_payload() {
+        let encoded = client_hello().write_to_bytes().unwrap();
+        let hello = CMsgClientHello::parse_from_bytes(&encoded).unwrap();
+        assert_eq!(hello.version, Some(2_000_244));
+        assert_eq!(hello.client_session_need, Some(0));
+        assert_eq!(hello.client_launcher, Some(0));
+        assert_eq!(hello.steam_launcher, Some(0));
+        assert!(!encoded.is_empty());
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemAttribute {
     pub definition_index: u32,
@@ -54,9 +80,10 @@ pub struct InventoryClient {
 
 impl InventoryClient {
     pub async fn connect(connection: &Connection) -> Result<(Self, Vec<EconItem>), InventoryError> {
+        let handshake = GCHandshake { hello: client_hello() };
         let (coordinator, welcome) = tokio::time::timeout(
             Duration::from_secs(30),
-            connection.game_coordinator(&GCHandshake::default()),
+            connection.game_coordinator(&handshake),
         )
         .await
         .map_err(|_| InventoryError::TimedOut)?
@@ -69,7 +96,7 @@ impl InventoryClient {
         let operation = async {
             let welcome = self.coordinator.one::<CMsgClientWelcome>();
             self.coordinator
-                .send(CMsgClientHello::new())
+                .send(client_hello())
                 .await
                 .map_err(|_| InventoryError::ConnectionFailed)?;
             let welcome = welcome
