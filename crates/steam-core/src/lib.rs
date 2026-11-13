@@ -1,6 +1,7 @@
 //! Steam connection lifecycle: login strategies, session, CM events.
 
 mod live;
+mod totp;
 
 pub use live::SteamClient;
 
@@ -11,6 +12,7 @@ pub struct Credentials {
     pub password: String,
     pub guard_code: Option<String>,
     pub refresh_token: Option<String>,
+    pub shared_secret: Option<String>,
 }
 
 impl Drop for Credentials {
@@ -19,6 +21,7 @@ impl Drop for Credentials {
         self.password.zeroize();
         self.guard_code.zeroize();
         self.refresh_token.zeroize();
+        self.shared_secret.zeroize();
     }
 }
 
@@ -33,6 +36,10 @@ pub struct Profile {
 pub enum LoginError {
     #[error("Enter a Steam username and password.")]
     InvalidCredentials,
+    #[error("Enter a valid Base64 Steam shared secret (20 decoded bytes).")]
+    InvalidSharedSecret,
+    #[error("Use either a Steam Guard code or a shared secret, not both.")]
+    ConflictingGuardOptions,
     #[error("A Steam login is already in progress.")]
     Busy,
     #[error("Sign out before connecting another Steam account.")]
@@ -157,6 +164,7 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
             {
                 return Err(LoginError::InvalidCredentials);
             }
+            totp::validate_options(&credentials)?;
             self.transport.login(credentials).await
         };
         let (connection, mut profile) = tokio::select! {
@@ -308,6 +316,7 @@ mod tests {
             password: "test-password".into(),
             guard_code: None,
             refresh_token: None,
+            shared_secret: None,
         }
     }
 
@@ -500,6 +509,28 @@ mod tests {
         manager.sign_out().unwrap();
         assert_eq!(login.await, Err(LoginError::Cancelled));
         assert!(manager.profile().unwrap().is_none());
+        manager.transport.ready.notify_one();
+        assert!(manager.login(credentials()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn invalid_shared_secret_fails_before_transport_and_allows_retry() {
+        use base64::Engine;
+        let manager = manager();
+        let mut input = credentials();
+        input.shared_secret = Some("invalid!".into());
+        assert_eq!(
+            manager.login(input).await,
+            Err(LoginError::InvalidSharedSecret)
+        );
+        assert!(manager.profile().unwrap().is_none());
+        let mut input = credentials();
+        input.shared_secret = Some(base64::engine::general_purpose::STANDARD.encode([0u8; 20]));
+        input.guard_code = Some("ABCDE".into());
+        assert_eq!(
+            manager.login(input).await,
+            Err(LoginError::ConflictingGuardOptions)
+        );
         manager.transport.ready.notify_one();
         assert!(manager.login(credentials()).await.is_ok());
     }

@@ -22,7 +22,7 @@ Conventions:
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + optional Guard/mobile approval; remember opt-in saves a native refresh token to the keyring. Optional notice reports secure-save failure without failing authentication. Live parity pending | ◐ |
+| `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + manual Guard code, shared-secret device TOTP, or mobile approval. Guard code and shared secret are mutually exclusive. Remember saves only a refresh token to keyring; optional notice reports save failure. Live parity pending | ◐ |
 | `steam_login_saved(account) -> SteamProfile` | Saved-account login | Account name only in IPC; reads refresh token from native keyring inside cancellable login lifecycle. Live verification pending | ◐ |
 | `steam_session() -> Option<SteamProfile>` | Renderer auth state | Account and SteamID only; restores UI state after a frontend reload. Connection-loss events pending | ◐ |
 | `steam_start_qr_login(remember) -> LoginResult` | `startQRLogin` + `login-reply` | QR challenge pushed as `login:qr_challenge` event | ☐ |

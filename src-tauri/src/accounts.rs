@@ -436,6 +436,7 @@ mod tests {
                 password: "synthetic-password".into(),
                 guard_code: None,
                 refresh_token: None,
+                shared_secret: None,
             };
             let generation = session.login(credentials()).await.unwrap().generation;
             let stale_metadata = Arc::new(AtomicBool::new(false));

@@ -26,8 +26,10 @@ performance, and first-class support for Steam + third-party market APIs.
   later persists refresh tokens only in the OS keyring, with secret-free account
   metadata and rollback on cancellation or metadata failure. Saved-account token
   lookup is bounded by the login timeout and cancellation. Keyring/real-account
-  verification remains pending; shared-secret, QR, and browser-token login are
-  not implemented yet.
+  verification remains pending. Shared-secret login now validates Base64 input
+  before networking and generates device-only TOTP codes locally with zeroizing
+  secret ownership. Frontend credential buffers are cleared before awaiting IPC;
+  shared secrets are not persisted. QR and browser-token login remain unimplemented.
 - Read-only inventory now uses a retained CS2 GC client and a bounded welcome
   cache parser. Connecting is explicit because it marks the Steam account as
   playing CS2. Requests time out after 30 seconds; sign-out cancels in-flight

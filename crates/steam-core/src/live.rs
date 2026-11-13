@@ -13,6 +13,7 @@ pub struct SteamClient;
 
 struct DesktopConfirmation {
     code: Option<Zeroizing<String>>,
+    shared_secret: Option<Zeroizing<String>>,
 }
 
 impl AuthConfirmationHandler for DesktopConfirmation {
@@ -22,6 +23,26 @@ impl AuthConfirmationHandler for DesktopConfirmation {
     ) -> Option<ConfirmationAction> {
         if allowed.iter().any(|method| !method.action_required()) {
             return Some(ConfirmationAction::None);
+        }
+        if let Some(secret) = self.shared_secret {
+            let device: Vec<_> = allowed
+                .iter()
+                .filter(|method| {
+                    matches!(
+                        method.token_type(),
+                        Some(steam_vent::auth::GuardTokenType::Device)
+                    )
+                })
+                .cloned()
+                .collect();
+            if !device.is_empty() {
+                let code = crate::totp::code(secret.as_str(), std::time::SystemTime::now()).ok()?;
+                let handler = UserProvidedAuthConfirmationHandler::new(
+                    Cursor::new(code.as_bytes()),
+                    tokio::io::sink(),
+                );
+                return handler.handle_confirmation(&device).await;
+            }
         }
         if let Some(code) = self.code.filter(|code| !code.trim().is_empty()) {
             let input = Cursor::new(code.trim().as_bytes());
@@ -62,10 +83,13 @@ impl SteamTransport for SteamClient {
     type Connection = Connection;
 
     async fn login(&self, credentials: Credentials) -> Result<(Connection, Profile), LoginError> {
+        crate::totp::validate_options(&credentials)?;
+        let shared_secret = crate::totp::shared_secret(credentials.shared_secret.as_deref())?;
         let servers = ServerList::discover()
             .await
             .map_err(|_| LoginError::ConnectionFailed)?;
         let handler = DesktopConfirmation {
+            shared_secret,
             code: credentials
                 .guard_code
                 .as_ref()
@@ -196,7 +220,10 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_guard_does_not_prompt_on_stdin() {
-        let handler = DesktopConfirmation { code: None };
+        let handler = DesktopConfirmation {
+            code: None,
+            shared_secret: None,
+        };
         assert!(handler.handle_confirmation(&[]).await.is_none());
     }
 
@@ -205,7 +232,10 @@ mod tests {
         let allowed = [confirmation(
             EAuthSessionGuardType::k_EAuthSessionGuardType_DeviceCode,
         )];
-        let handler = DesktopConfirmation { code: None };
+        let handler = DesktopConfirmation {
+            code: None,
+            shared_secret: None,
+        };
         assert!(handler.handle_confirmation(&allowed).await.is_none());
     }
 
@@ -224,6 +254,7 @@ mod tests {
             let allowed = [confirmation(kind)];
             let handler = DesktopConfirmation {
                 code: Some(Zeroizing::new(" ABCDE ".into())),
+                shared_secret: None,
             };
             let result = handler.handle_confirmation(&allowed).await;
             if device {
@@ -247,11 +278,40 @@ mod tests {
             EAuthSessionGuardType::k_EAuthSessionGuardType_DeviceConfirmation,
         ] {
             let allowed = [confirmation(kind)];
-            let handler = DesktopConfirmation { code: None };
+            let handler = DesktopConfirmation {
+                code: None,
+                shared_secret: None,
+            };
             assert!(matches!(
                 handler.handle_confirmation(&allowed).await,
                 Some(ConfirmationAction::None)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn shared_secret_generates_only_device_codes_and_never_email_codes() {
+        use base64::Engine;
+        let secret = base64::engine::general_purpose::STANDARD.encode([0u8; 20]);
+        let device = [
+            confirmation(EAuthSessionGuardType::k_EAuthSessionGuardType_EmailCode),
+            confirmation(EAuthSessionGuardType::k_EAuthSessionGuardType_DeviceCode),
+        ];
+        let handler = DesktopConfirmation {
+            code: None,
+            shared_secret: Some(Zeroizing::new(secret.clone())),
+        };
+        assert!(matches!(
+            handler.handle_confirmation(&device).await,
+            Some(ConfirmationAction::GuardToken(_, GuardTokenType::Device))
+        ));
+        let email = [confirmation(
+            EAuthSessionGuardType::k_EAuthSessionGuardType_EmailCode,
+        )];
+        let handler = DesktopConfirmation {
+            code: None,
+            shared_secret: Some(Zeroizing::new(secret)),
+        };
+        assert!(handler.handle_confirmation(&email).await.is_none());
     }
 }

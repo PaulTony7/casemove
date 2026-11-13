@@ -55,8 +55,12 @@ storage failures leave the Steam session signed in and display a warning.
 Use the Sign in with saved login icon beside a remembered account to connect
 without re-entering a password. Migrated metadata without a new keyring token
 still requires password login; missing or rejected tokens produce an error.
-Removing a remembered account also removes its keyring token. Shared-secret,
-QR, and browser-token login are not implemented yet. Real-account remembered
+Removing a remembered account also removes its keyring token. Enable Show secret
+field to supply a Base64 Steam shared secret (20 decoded bytes) instead of a
+manual Guard code. Codes are generated locally when Steam requests a device
+code; the secret is never stored. Remember for later stores only the refresh
+token. Keep the system clock accurate. QR and browser-token login are not
+implemented yet. Real-account shared-secret and remembered
 login and OS-keyring verification remain manual checks.
 
 After signing in, open Inventory and choose Connect to CS2. Close running games

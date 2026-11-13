@@ -17,7 +17,7 @@ fn profile_reply(profile: Profile) -> SteamProfile {
 
 #[tauri::command]
 pub async fn steam_login(
-    params: PasswordLoginParams,
+    mut params: PasswordLoginParams,
     session: tauri::State<'_, DesktopSession>,
     app: tauri::AppHandle,
 ) -> Result<SteamProfile, String> {
@@ -25,9 +25,10 @@ pub async fn steam_login(
     let profile = session
         .login(Credentials {
             account: settings::secret::canonical_account(&params.account),
-            password: params.password,
-            guard_code: params.guard_code,
+            password: std::mem::take(&mut params.password),
+            guard_code: params.guard_code.take(),
             refresh_token: None,
+            shared_secret: params.shared_secret.take(),
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -102,6 +103,7 @@ pub async fn steam_login_saved(
                 password: String::new(),
                 guard_code: None,
                 refresh_token: Some(token.to_string()),
+                shared_secret: None,
             })
         })
         .await

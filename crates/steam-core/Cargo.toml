@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base64 = "0.22"
+totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "steam", "zeroize"] }
 thiserror = "2"
 steam-vent = "=0.5.0"
 zeroize = "1"

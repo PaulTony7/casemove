@@ -39,8 +39,8 @@ struct RemoveAccountArgs {
 }
 
 #[derive(Serialize)]
-struct LoginArgs {
-    params: PasswordLoginParams,
+struct LoginArgs<'a> {
+    params: &'a PasswordLoginParams,
 }
 
 #[derive(Serialize)]
@@ -53,6 +53,7 @@ pub fn App() -> impl IntoView {
     let (method, set_method) = signal(LoginMethod::Regular);
     let (username, set_username) = signal(String::new());
     let (remember, set_remember) = signal(false);
+    let (show_secret, set_show_secret) = signal(false);
     let (desktop, set_desktop) = signal(false);
     let (profile, set_profile) = signal(None::<SteamProfile>);
     let (login_error, set_login_error) = signal(String::new());
@@ -65,6 +66,7 @@ pub fn App() -> impl IntoView {
     let attempt = RwSignal::new(0u64);
     let password_input = NodeRef::<leptos::html::Input>::new();
     let guard_input = NodeRef::<leptos::html::Input>::new();
+    let secret_input = NodeRef::<leptos::html::Input>::new();
     let (accounts, set_accounts) = signal(Vec::<SavedAccount>::new());
     let (account_error, set_account_error) = signal(String::new());
     let (loading, set_loading) = signal(true);
@@ -150,6 +152,8 @@ pub fn App() -> impl IntoView {
         set_login_busy.set(true);
         if let Some(field) = password_input.get_untracked() { field.set_value(""); }
         if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
+        if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+        set_show_secret.set(false);
         attempt.update(|value| *value += 1);
         let current_attempt = attempt.get_untracked();
         spawn_local(async move {
@@ -184,24 +188,33 @@ pub fn App() -> impl IntoView {
         let guard_code = guard_input.get_untracked().and_then(|field| {
             let code = field.value();
             field.set_value("");
-            (!code.trim().is_empty()).then(|| code.trim().to_owned())
+            (!code.trim().is_empty()).then_some(code)
         });
-        let args = LoginArgs {
-            params: PasswordLoginParams {
+        let shared_secret = if show_secret.get_untracked() {
+            secret_input.get_untracked().map(|field| {
+                let secret = field.value();
+                field.set_value("");
+                secret
+            })
+        } else { None };
+        let mut params = PasswordLoginParams {
                 account: username.get_untracked().trim().to_owned(),
                 password,
                 guard_code,
+                shared_secret,
                 remember: remember.get_untracked(),
-            },
         };
+        let prepared = params.encode_and_clear(|params| serde_wasm_bindgen::to_value(&LoginArgs { params })
+            .map_err(|_| "Could not prepare the Steam login request.".to_owned()));
+        drop(params);
         set_login_error.set(String::new());
         set_login_busy.set(true);
         attempt.update(|value| *value += 1);
         let current_attempt = attempt.get_untracked();
         spawn_local(async move {
-            let result = match serde_wasm_bindgen::to_value(&args) {
+            let result = match prepared {
                 Ok(args) => desktop_command(STEAM_LOGIN, args).await,
-                Err(_) => Err("Could not prepare the Steam login request.".into()),
+                Err(error) => Err(error),
             };
             if attempt.get_untracked() != current_attempt {
                 return;
@@ -219,6 +232,8 @@ pub fn App() -> impl IntoView {
             return;
         }
         attempt.update(|value| *value += 1);
+        if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+        set_show_secret.set(false);
         set_inventory.set(None);
         set_inventory_open.set(false);
         set_inventory_error.set(String::new());
@@ -338,6 +353,8 @@ pub fn App() -> impl IntoView {
                                     on:click=move |_| {
                                         if let Some(field) = password_input.get_untracked() { field.set_value(""); }
                                         if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
+                                        if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+                                        set_show_secret.set(false);
                                         set_login_error.set(String::new());
                                         set_method.set(value);
                                     }><Icon icon=icon/>{name}</button>
@@ -367,13 +384,24 @@ pub fn App() -> impl IntoView {
                                                 required disabled=move || login_busy.get() || session_busy.get()/>
                                             <label class="sr-only" for="auth-code">"Steam Guard code (optional)"</label>
                                             <input id="auth-code" node_ref=guard_input name="authcode" placeholder="Authcode (optional)" autocomplete="one-time-code" spellcheck="false"
-                                                disabled=move || login_busy.get() || session_busy.get()/>
+                                                disabled=move || login_busy.get() || session_busy.get() || show_secret.get()/>
+                                            <Show when=move || show_secret.get()>
+                                                <label class="sr-only" for="shared-secret">"Steam shared secret"</label>
+                                                <input id="shared-secret" node_ref=secret_input type="password" placeholder="Base64 shared secret" autocomplete="off"
+                                                    spellcheck="false" maxlength="64" required disabled=move || login_busy.get() || session_busy.get()/>
+                                            </Show>
                                         </div>
                                         <div class="form-options">
                                             <label><input type="checkbox" prop:checked=move || remember.get()
                                                 disabled=move || login_busy.get() || session_busy.get()
                                                 on:change=move |event| set_remember.set(event_target_checked(&event))/>"Remember for later"</label>
-                                            <label title="Shared-secret login is not available yet">"Show secret field"<input type="checkbox" disabled/></label>
+                                            <label>"Show secret field"<input type="checkbox" prop:checked=move || show_secret.get()
+                                                disabled=move || login_busy.get() || session_busy.get()
+                                                on:change=move |event| {
+                                                    if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
+                                                    if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+                                                    set_show_secret.set(event_target_checked(&event));
+                                                }/></label>
                                         </div>
                                     }.into_any(),
                                     LoginMethod::WebToken => view! {

@@ -33,7 +33,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Native keyring wrapper integrated with opt-in remembered login.
 - [x] Remember login using refresh tokens stored in the OS keyring (initial implementation; live verification pending).
 - [x] Sign in using a saved account without entering password/Guard again (initial implementation; live verification pending).
-- [ ] Shared-secret/TOTP login.
+- [x] Shared-secret/TOTP login with validated Base64 input and local device-code generation (live verification pending).
 - [ ] QR challenge, approval, cancellation, and retry workflow.
 - [ ] Browser-token login and input validation.
 - [ ] Profile avatars, display names, and wallet balance.
@@ -139,6 +139,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Browser IPC-double checks for the initial inventory UI; not native IPC proof.
 - [ ] Confirm the ClientHello correction resolves the reported live inventory timeout.
 - [ ] Verify OS-keyring save/read/delete and remembered-login reuse after restart with a real account.
+- [ ] Verify shared-secret login, email-only challenges, clock skew, and code rollover against a real account.
 - [ ] Compare real-account inventory IDs/counts and visible metadata against legacy.
 - [ ] Verify empty and non-empty storage units through native IPC and the live GC.
 - [ ] Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.

@@ -12,14 +12,46 @@ pub struct SavedAccount {
     pub has_saved_login: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordLoginParams {
     pub account: String,
     pub password: String,
     pub guard_code: Option<String>,
     #[serde(default)]
+    pub shared_secret: Option<String>,
+    #[serde(default)]
     pub remember: bool,
+}
+
+impl PasswordLoginParams {
+    pub fn encode_and_clear<Output>(&mut self, encode: impl FnOnce(&Self) -> Output) -> Output {
+        let output = encode(self);
+        zeroize::Zeroize::zeroize(self);
+        output
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn credential_buffers_are_cleared_before_a_serialization_result_can_be_awaited() {
+        for failed in [false, true] {
+            let mut params = PasswordLoginParams { account: "synthetic-user".into(), password: "synthetic-password".into(),
+                guard_code: None, shared_secret: Some("synthetic-secret".into()), remember: true };
+            let result = params.encode_and_clear(|request| {
+                assert!(!request.password.is_empty());
+                assert!(request.shared_secret.is_some());
+                if failed { Err(()) } else { Ok(()) }
+            });
+            assert!(params.password.is_empty());
+            assert!(params.shared_secret.is_none());
+            assert!(params.guard_code.is_none());
+            assert_eq!(result.is_err(), failed);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
