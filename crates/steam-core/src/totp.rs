@@ -27,9 +27,20 @@ pub(crate) fn validate_options(credentials: &Credentials) -> Result<(), LoginErr
             .guard_code
             .as_ref()
             .is_some_and(|code| !code.trim().is_empty())
-            || credentials.refresh_token.is_some())
+            || credentials.refresh_token.is_some()
+            || credentials.web_logon_token.is_some()
+            || credentials.qr_challenge_tx.is_some())
     {
         return Err(LoginError::ConflictingGuardOptions);
+    }
+    if credentials.web_logon_token.is_some()
+        && (credentials.refresh_token.is_some()
+            || !credentials.password.is_empty()
+            || credentials.guard_code.is_some()
+            || credentials.shared_secret.is_some()
+            || credentials.qr_challenge_tx.is_some())
+    {
+        return Err(LoginError::InvalidWebToken);
     }
     Ok(())
 }
@@ -102,6 +113,9 @@ mod tests {
             guard_code: Some("ABCDE".into()),
             refresh_token: None,
             shared_secret: Some(STANDARD.encode([0u8; 20])),
+            web_logon_token: None,
+            steam_id: None,
+            qr_challenge_tx: None,
         };
         assert_eq!(
             validate_options(&credentials),

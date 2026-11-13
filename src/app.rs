@@ -1,7 +1,9 @@
 use crate::inventory::InventoryView;
 use app_commands::{
-    InventorySnapshot, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_LOGIN_SAVED, STEAM_SESSION,
-    STEAM_SIGN_OUT, SavedAccount, SteamProfile,
+    AccountPositionParams, BrowserTokenLoginParams, InventoryItem, InventorySnapshot,
+    LOGIN_QR_CHALLENGE, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_LOGIN_SAVED,
+    STEAM_LOGIN_WEBTOKEN, STEAM_SESSION, STEAM_SIGN_OUT, STEAM_START_QR_LOGIN, STORAGE_CONTENTS,
+    STORE_SET_ACCOUNT_POSITION, SavedAccount, SteamProfile, StorageContentsParams,
 };
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_icons::Icon;
@@ -12,6 +14,9 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "core"])]
     async fn invoke(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "event"])]
+    async fn listen(event: &str, handler: &js_sys::Function) -> Result<JsValue, JsValue>;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,6 +53,23 @@ struct SavedLoginArgs {
     account: String,
 }
 
+#[derive(Serialize)]
+struct QrLoginArgs {
+    remember: bool,
+}
+
+fn qr_image_url(challenge: &str) -> Result<String, String> {
+    let code = qrcode::QrCode::new(challenge).map_err(|error| error.to_string())?;
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(235, 235)
+        .build();
+    let encoded = js_sys::encode_uri_component(&svg)
+        .as_string()
+        .ok_or_else(|| "Could not render the Steam QR code.".to_owned())?;
+    Ok(format!("data:image/svg+xml,{encoded}"))
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let (method, set_method) = signal(LoginMethod::Regular);
@@ -58,17 +80,27 @@ pub fn App() -> impl IntoView {
     let (profile, set_profile) = signal(None::<SteamProfile>);
     let (login_error, set_login_error) = signal(String::new());
     let (login_busy, set_login_busy) = signal(false);
+    let (qr_challenge, set_qr_challenge) = signal(None::<String>);
+    let (qr_listener_ready, set_qr_listener_ready) = signal(false);
+    let (qr_remember, set_qr_remember) = signal(false);
     let (session_busy, set_session_busy) = signal(false);
     let (inventory_open, set_inventory_open) = signal(false);
     let (inventory, set_inventory) = signal(None::<InventorySnapshot>);
     let (inventory_busy, set_inventory_busy) = signal(false);
     let (inventory_error, set_inventory_error) = signal(String::new());
+    let (storage_selection, set_storage_selection) = signal(None::<(String, String)>);
+    let (storage_contents, set_storage_contents) = signal(None::<Vec<InventoryItem>>);
+    let (storage_busy, set_storage_busy) = signal(false);
+    let (storage_error, set_storage_error) = signal(String::new());
     let attempt = RwSignal::new(0u64);
+    let storage_attempt = RwSignal::new(0u64);
     let password_input = NodeRef::<leptos::html::Input>::new();
     let guard_input = NodeRef::<leptos::html::Input>::new();
     let secret_input = NodeRef::<leptos::html::Input>::new();
+    let browser_token_input = NodeRef::<leptos::html::Textarea>::new();
     let (accounts, set_accounts) = signal(Vec::<SavedAccount>::new());
     let (account_error, set_account_error) = signal(String::new());
+    let (account_order_busy, set_account_order_busy) = signal(false);
     let (loading, set_loading) = signal(true);
     let (pending_removal, set_pending_removal) = signal(None::<String>);
     let (removing, set_removing) = signal(false);
@@ -96,6 +128,39 @@ pub fn App() -> impl IntoView {
             return;
         }
         set_desktop.set(true);
+        spawn_local(async move {
+            let handler = Closure::<dyn FnMut(JsValue)>::new(move |event| {
+                match js_sys::Reflect::get(&event, &JsValue::from_str("payload"))
+                    .ok()
+                    .and_then(|payload| payload.as_string())
+                {
+                    Some(challenge) => set_qr_challenge.set(Some(challenge)),
+                    None => set_login_error.set("Steam returned an invalid QR challenge.".into()),
+                }
+            });
+            let result = listen(LOGIN_QR_CHALLENGE, handler.as_ref().unchecked_ref()).await;
+            match result.and_then(|unlisten| {
+                if unlisten.is_function() {
+                    Ok(())
+                } else {
+                    Err(JsValue::from_str(
+                        "Could not register the QR login listener.",
+                    ))
+                }
+            }) {
+                Ok(()) => {
+                    handler.forget();
+                    set_qr_listener_ready.set(true);
+                }
+                Err(error) => {
+                    set_login_error.set(
+                        error
+                            .as_string()
+                            .unwrap_or_else(|| "Could not register the QR login listener.".into()),
+                    );
+                }
+            }
+        });
         spawn_local(async move {
             match desktop_command("store_get_accounts", JsValue::NULL).await {
                 Ok(value) => set_accounts.set(value),
@@ -134,6 +199,7 @@ pub fn App() -> impl IntoView {
 
     let complete_login = move |value: SteamProfile| {
         set_login_error.set(value.notice.clone().unwrap_or_default());
+        set_qr_challenge.set(None);
         set_profile.set(Some(value));
         spawn_local(async move {
             match desktop_command("store_get_accounts", JsValue::NULL).await {
@@ -143,16 +209,50 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let move_account = Callback::new(move |(username, index): (String, usize)| {
+        if account_order_busy.get_untracked() {
+            return;
+        }
+        set_account_order_busy.set(true);
+        spawn_local(async move {
+            let result =
+                match serde_wasm_bindgen::to_value(&AccountPositionParams { username, index }) {
+                    Ok(args) => desktop_command(STORE_SET_ACCOUNT_POSITION, args).await,
+                    Err(error) => Err(error.to_string()),
+                };
+            match result {
+                Ok(value) => {
+                    set_accounts.set(value);
+                    set_account_error.set(String::new());
+                }
+                Err(error) => set_account_error.set(error),
+            }
+            set_account_order_busy.set(false);
+        });
+    });
+
     let login_saved = Callback::new(move |account: String| {
-        if !desktop.get_untracked() || login_busy.get_untracked() || session_busy.get_untracked()
-            || profile.get_untracked().is_some() { return; }
+        if !desktop.get_untracked()
+            || login_busy.get_untracked()
+            || session_busy.get_untracked()
+            || profile.get_untracked().is_some()
+        {
+            return;
+        }
         set_username.set(account.clone());
         set_method.set(LoginMethod::Regular);
         set_login_error.set(String::new());
+        set_qr_challenge.set(None);
         set_login_busy.set(true);
-        if let Some(field) = password_input.get_untracked() { field.set_value(""); }
-        if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
-        if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+        if let Some(field) = password_input.get_untracked() {
+            field.set_value("");
+        }
+        if let Some(field) = guard_input.get_untracked() {
+            field.set_value("");
+        }
+        if let Some(field) = secret_input.get_untracked() {
+            field.set_value("");
+        }
         set_show_secret.set(false);
         attempt.update(|value| *value += 1);
         let current_attempt = attempt.get_untracked();
@@ -161,7 +261,9 @@ pub fn App() -> impl IntoView {
                 Ok(args) => desktop_command(STEAM_LOGIN_SAVED, args).await,
                 Err(_) => Err("Could not prepare the saved-login request.".into()),
             };
-            if attempt.get_untracked() != current_attempt { return; }
+            if attempt.get_untracked() != current_attempt {
+                return;
+            }
             match result {
                 Ok(value) => complete_login(value),
                 Err(error) => set_login_error.set(error),
@@ -175,10 +277,72 @@ pub fn App() -> impl IntoView {
         if !desktop.get_untracked()
             || login_busy.get_untracked()
             || session_busy.get_untracked()
-            || method.get_untracked() != LoginMethod::Regular
             || profile.get_untracked().is_some()
         {
             return;
+        }
+        match method.get_untracked() {
+            LoginMethod::Qr => {
+                if !qr_listener_ready.get_untracked() {
+                    set_login_error.set("QR login is not ready yet. Try again shortly.".into());
+                    return;
+                }
+                set_qr_challenge.set(None);
+                set_login_error.set(String::new());
+                set_login_busy.set(true);
+                attempt.update(|value| *value += 1);
+                let current_attempt = attempt.get_untracked();
+                let remember = qr_remember.get_untracked();
+                spawn_local(async move {
+                    let result = match serde_wasm_bindgen::to_value(&QrLoginArgs { remember }) {
+                        Ok(args) => desktop_command(STEAM_START_QR_LOGIN, args).await,
+                        Err(error) => Err(error.to_string()),
+                    };
+                    if attempt.get_untracked() != current_attempt {
+                        return;
+                    }
+                    match result {
+                        Ok(value) => complete_login(value),
+                        Err(error) => set_login_error.set(error),
+                    }
+                    set_login_busy.set(false);
+                });
+                return;
+            }
+            LoginMethod::WebToken => {
+                let Some(field) = browser_token_input.get_untracked() else {
+                    return;
+                };
+                let payload = field.value();
+                field.set_value("");
+                let mut params = BrowserTokenLoginParams { payload };
+                let prepared = params.encode_and_clear(|params| {
+                    serde_wasm_bindgen::to_value(params)
+                        .map_err(|_| "Could not prepare the browser login request.".to_owned())
+                });
+                drop(params);
+                set_qr_challenge.set(None);
+                set_login_error.set(String::new());
+                set_login_busy.set(true);
+                attempt.update(|value| *value += 1);
+                let current_attempt = attempt.get_untracked();
+                spawn_local(async move {
+                    let result = match prepared {
+                        Ok(args) => desktop_command(STEAM_LOGIN_WEBTOKEN, args).await,
+                        Err(error) => Err(error),
+                    };
+                    if attempt.get_untracked() != current_attempt {
+                        return;
+                    }
+                    match result {
+                        Ok(value) => complete_login(value),
+                        Err(error) => set_login_error.set(error),
+                    }
+                    set_login_busy.set(false);
+                });
+                return;
+            }
+            LoginMethod::Regular => {}
         }
         let Some(password_field) = password_input.get_untracked() else {
             return;
@@ -196,16 +360,20 @@ pub fn App() -> impl IntoView {
                 field.set_value("");
                 secret
             })
-        } else { None };
-        let mut params = PasswordLoginParams {
-                account: username.get_untracked().trim().to_owned(),
-                password,
-                guard_code,
-                shared_secret,
-                remember: remember.get_untracked(),
+        } else {
+            None
         };
-        let prepared = params.encode_and_clear(|params| serde_wasm_bindgen::to_value(&LoginArgs { params })
-            .map_err(|_| "Could not prepare the Steam login request.".to_owned()));
+        let mut params = PasswordLoginParams {
+            account: username.get_untracked().trim().to_owned(),
+            password,
+            guard_code,
+            shared_secret,
+            remember: remember.get_untracked(),
+        };
+        let prepared = params.encode_and_clear(|params| {
+            serde_wasm_bindgen::to_value(&LoginArgs { params })
+                .map_err(|_| "Could not prepare the Steam login request.".to_owned())
+        });
         drop(params);
         set_login_error.set(String::new());
         set_login_busy.set(true);
@@ -232,12 +400,20 @@ pub fn App() -> impl IntoView {
             return;
         }
         attempt.update(|value| *value += 1);
-        if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+        storage_attempt.update(|value| *value += 1);
+        if let Some(field) = secret_input.get_untracked() {
+            field.set_value("");
+        }
         set_show_secret.set(false);
+        set_qr_challenge.set(None);
         set_inventory.set(None);
         set_inventory_open.set(false);
         set_inventory_error.set(String::new());
         set_inventory_busy.set(false);
+        set_storage_selection.set(None);
+        set_storage_contents.set(None);
+        set_storage_busy.set(false);
+        set_storage_error.set(String::new());
         set_session_busy.set(true);
         spawn_local(async move {
             match desktop_command::<()>(STEAM_SIGN_OUT, JsValue::NULL).await {
@@ -284,6 +460,59 @@ pub fn App() -> impl IntoView {
             }
             set_inventory_busy.set(false);
         });
+    });
+
+    let open_storage_contents = Callback::new(move |(casket_id, name): (String, String)| {
+        if session_busy.get_untracked() || profile.get_untracked().is_none() {
+            return;
+        }
+        let is_inventory_storage = inventory.get_untracked().is_some_and(|snapshot| {
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.id == casket_id && item.is_storage_unit)
+        });
+        if !is_inventory_storage {
+            set_inventory_error.set("That storage unit is not in the loaded inventory.".into());
+            return;
+        }
+        set_storage_selection.set(Some((casket_id.clone(), name)));
+        set_storage_contents.set(None);
+        set_storage_error.set(String::new());
+        set_storage_busy.set(true);
+        storage_attempt.update(|value| *value += 1);
+        let current_storage_attempt = storage_attempt.get_untracked();
+        let current_session_attempt = attempt.get_untracked();
+        spawn_local(async move {
+            let args = StorageContentsParams {
+                casket_id: casket_id.clone(),
+            };
+            let result = match serde_wasm_bindgen::to_value(&args) {
+                Ok(args) => desktop_command::<Vec<InventoryItem>>(STORAGE_CONTENTS, args).await,
+                Err(error) => Err(error.to_string()),
+            };
+            if storage_attempt.get_untracked() != current_storage_attempt
+                || attempt.get_untracked() != current_session_attempt
+                || !storage_selection
+                    .get_untracked()
+                    .is_some_and(|(selected_id, _)| selected_id == casket_id)
+            {
+                return;
+            }
+            match result {
+                Ok(items) => set_storage_contents.set(Some(items)),
+                Err(error) => set_storage_error.set(error),
+            }
+            set_storage_busy.set(false);
+        });
+    });
+
+    let close_storage_contents = Callback::new(move |()| {
+        storage_attempt.update(|value| *value += 1);
+        set_storage_selection.set(None);
+        set_storage_contents.set(None);
+        set_storage_busy.set(false);
+        set_storage_error.set(String::new());
     });
 
     view! {
@@ -354,6 +583,8 @@ pub fn App() -> impl IntoView {
                                         if let Some(field) = password_input.get_untracked() { field.set_value(""); }
                                         if let Some(field) = guard_input.get_untracked() { field.set_value(""); }
                                         if let Some(field) = secret_input.get_untracked() { field.set_value(""); }
+                                        if let Some(field) = browser_token_input.get_untracked() { field.set_value(""); }
+                                        set_qr_challenge.set(None);
                                         set_show_secret.set(false);
                                         set_login_error.set(String::new());
                                         set_method.set(value);
@@ -406,11 +637,25 @@ pub fn App() -> impl IntoView {
                                     }.into_any(),
                                     LoginMethod::WebToken => view! {
                                         <label class="field-label" for="web-token">"Browser login data"</label>
-                                        <textarea id="web-token" rows="4" placeholder="Paste data" spellcheck="false" autocomplete="off" disabled/>
+                                        <textarea id="web-token" node_ref=browser_token_input rows="4"
+                                            placeholder=r#"Paste the Steam browser login JSON"# spellcheck="false"
+                                            autocomplete="off" disabled=move || login_busy.get() || session_busy.get()/>
                                     }.into_any(),
                                     LoginMethod::Qr => view! {
-                                        <div class="qr-unavailable"><Icon icon=icondata::LuQrCode/><span>"No active QR session"</span></div>
-                                        <label class="remember-qr"><input type="checkbox" disabled/>"Remember for later"</label>
+                                        <div class="qr-panel">
+                                            {move || match qr_challenge.get() {
+                                                Some(challenge) => match qr_image_url(&challenge) {
+                                                    Ok(src) => view! { <img class="qr-image" src=src alt="Steam login QR code"/> }.into_any(),
+                                                    Err(error) => view! { <p role="alert" class="account-error">{error}</p> }.into_any(),
+                                                },
+                                                None => view! { <div class="qr-unavailable"><Icon icon=icondata::LuQrCode/><span>
+                                                    {move || if login_busy.get() { "Waiting for Steam QR code..." } else { "Start a QR login to display a code" }}
+                                                </span></div> }.into_any(),
+                                            }}
+                                        </div>
+                                        <label class="remember-qr"><input type="checkbox" prop:checked=move || qr_remember.get()
+                                            disabled=move || login_busy.get() || session_busy.get()
+                                            on:change=move |event| set_qr_remember.set(event_target_checked(&event))/>"Remember for later"</label>
                                     }.into_any(),
                                 }}
                                 <div id="sign-in-status" class="service-status" role="status"><Icon icon=icondata::LuInfo/>
@@ -419,17 +664,28 @@ pub fn App() -> impl IntoView {
                                     } else if session_busy.get() {
                                         "Cancelling Steam login..."
                                     } else if login_busy.get() {
-                                        "Connecting to Steam. Approve in the Steam mobile app if prompted."
+                                        if method.get() == LoginMethod::Qr {
+                                            "Scan the QR code with the Steam mobile app."
+                                        } else {
+                                            "Connecting to Steam. Approve in the Steam mobile app if prompted."
+                                        }
                                     } else if method.get() != LoginMethod::Regular {
-                                        "This login method is not available yet."
+                                        "Use your Steam mobile app or a signed-in Steam browser session."
                                     } else {
                                         "Steam Guard code or Steam mobile approval may be required."
                                     }}</span>
                                 </div>
                                 <Show when=move || !login_error.get().is_empty()><p role="alert" class="account-error">{move || login_error.get()}</p></Show>
                                 <button class="sign-in" type="submit" aria-describedby="sign-in-status"
-                                    disabled=move || !desktop.get() || loading.get() || login_busy.get() || session_busy.get() || method.get() != LoginMethod::Regular>
-                                    <Icon icon=icondata::LuLockKeyhole/>{move || if login_busy.get() { "Connecting..." } else { "Sign in" }}
+                                    disabled=move || !desktop.get() || loading.get() || login_busy.get() || session_busy.get()
+                                        || (method.get() == LoginMethod::Qr && !qr_listener_ready.get())>
+                                    <Icon icon=icondata::LuLogIn/>{move || if login_busy.get() {
+                                        "Connecting..."
+                                    } else if method.get() == LoginMethod::Qr {
+                                        "Start QR login"
+                                    } else {
+                                        "Sign in"
+                                    }}
                                 </button>
                                 <Show when=move || login_busy.get()>
                                     <button class="cancel-login" type="button" disabled=move || session_busy.get() on:click=move |_| sign_out.run(())>"Cancel login"</button>
@@ -451,10 +707,18 @@ pub fn App() -> impl IntoView {
                         </div>
                     </Show>
                     <ul class="account-list">
-                        <For each=move || accounts.get() key=|account| (account.username.clone(), account.has_saved_login, account.display_name.clone()) children=move |account| {
+                        <For each=move || accounts.get().into_iter().enumerate() key=|(_, account)| account.username.clone() children=move |(index, account)| {
                             let selected_name = account.username.clone();
                             let removed_name = account.username.clone();
                             let login_name = account.username.clone();
+                            let position_name = account.username.clone();
+                            let up_position_name = position_name.clone();
+                            let down_position_name = position_name.clone();
+                            let avatar = account.image_url
+                                .map(|url| view! { <img class="avatar account-avatar" src=url alt=""/> }.into_any())
+                                .unwrap_or_else(|| view! {
+                                    <div class="avatar"><Icon icon=icondata::LuUserRound/></div>
+                                }.into_any());
                             let saved_login = account.has_saved_login.then(|| view! {
                                 <button class="icon-button" title="Sign in with saved login" aria-label=format!("Sign in as {login_name}")
                                     disabled=move || login_busy.get() || session_busy.get() || profile.get().is_some()
@@ -462,11 +726,23 @@ pub fn App() -> impl IntoView {
                             });
                             view! {
                                 <li class="saved-account">
-                                    <div class="avatar"><Icon icon=icondata::LuUserRound/></div>
+                                    {avatar}
                                     <button class="account-select" title="Select account" disabled=move || login_busy.get() || session_busy.get() || profile.get().is_some() on:click=move |_| {
                                         set_username.set(selected_name.clone());
                                         set_method.set(LoginMethod::Regular);
                                     }><strong>{account.display_name}</strong><span>{account.username}</span></button>
+                                    <div class="account-order">
+                                        <button class="icon-button" type="button" aria-label="Move account up" title="Move account up"
+                                            disabled=move || account_order_busy.get() || index == 0
+                                            on:click=move |_| move_account.run((up_position_name.clone(), index.saturating_sub(1)))>
+                                            <Icon icon=icondata::LuChevronUp/>
+                                        </button>
+                                        <button class="icon-button" type="button" aria-label="Move account down" title="Move account down"
+                                            disabled=move || { account_order_busy.get() || index.saturating_add(1) >= accounts.get().len() }
+                                            on:click=move |_| move_account.run((down_position_name.clone(), index + 1))>
+                                            <Icon icon=icondata::LuChevronDown/>
+                                        </button>
+                                    </div>
                                     {saved_login}
                                     <button class="icon-button delete-account" aria-label="Remove saved account" title="Remove saved account"
                                         disabled=move || login_busy.get() || session_busy.get()
@@ -479,7 +755,10 @@ pub fn App() -> impl IntoView {
             </main>
             </Show>
             <Show when=move || inventory_open.get() && profile.get().is_some()>
-                <InventoryView snapshot=inventory busy=inventory_busy error=inventory_error on_refresh=refresh_inventory on_sign_out=sign_out/>
+                <InventoryView snapshot=inventory busy=inventory_busy error=inventory_error
+                    storage_selection=storage_selection storage_contents=storage_contents storage_busy=storage_busy
+                    storage_error=storage_error on_open_storage=open_storage_contents on_close_storage=close_storage_contents
+                    on_refresh=refresh_inventory on_sign_out=sign_out/>
             </Show>
                     <dialog class="confirm-dialog" node_ref=confirmation role="alertdialog" aria-labelledby="remove-heading" aria-describedby="remove-description"
                         on:keydown=move |event: leptos::ev::KeyboardEvent| {

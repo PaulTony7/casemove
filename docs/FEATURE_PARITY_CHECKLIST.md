@@ -34,10 +34,10 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Remember login using refresh tokens stored in the OS keyring (initial implementation; live verification pending).
 - [x] Sign in using a saved account without entering password/Guard again (initial implementation; live verification pending).
 - [x] Shared-secret/TOTP login with validated Base64 input and local device-code generation (live verification pending).
-- [ ] QR challenge, approval, cancellation, and retry workflow.
-- [ ] Browser-token login and input validation.
-- [ ] Profile avatars, display names, and wallet balance.
-- [ ] Saved-account ordering controls and appropriate legacy account-limit behavior.
+- [x] QR challenge, approval, cancellation, and retry workflow (initial implementation; live verification pending).
+- [x] Browser-token login and input validation (initial implementation; live verification pending).
+- [x] Profile avatars and display names from allowlisted Steam metadata.
+- [x] Saved-account ordering controls. Legacy account-limit behavior remains to verify.
 - [ ] Steam-client-open prompt and close/continue handling.
 - [ ] Automatic Steam/GC reconnection and accurate connection-loss status.
 

@@ -58,10 +58,16 @@ still requires password login; missing or rejected tokens produce an error.
 Removing a remembered account also removes its keyring token. Enable Show secret
 field to supply a Base64 Steam shared secret (20 decoded bytes) instead of a
 manual Guard code. Codes are generated locally when Steam requests a device
-code; the secret is never stored. Remember for later stores only the refresh
-token. Keep the system clock accurate. QR and browser-token login are not
-implemented yet. Real-account shared-secret and remembered
-login and OS-keyring verification remain manual checks.
+code; the secret is never stored. QR login creates its challenge through
+`steam-auth-rs`, renders the QR locally, and can remember the resulting refresh
+token in the OS keyring. Browser-token login accepts the signed-in Steam
+browser's JSON and uses a separate Steam client connection; it does not remember
+that token. `steam-client-rs` does not provide the same token-zeroization
+guarantees as the native credential path. Live QR/browser-token and OS-keyring
+verification remain manual checks.
+Saved accounts retain imported avatar URLs from allowlisted Steam image hosts
+and can be reordered with the up/down controls; both profile metadata and order
+persist in native settings.
 
 After signing in, open Inventory and choose Connect to CS2. Close running games
 first: the GC handshake marks this account as playing CS2. The read-only snapshot

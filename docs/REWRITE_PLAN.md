@@ -13,7 +13,9 @@ performance, and first-class support for Steam + third-party market APIs.
   Casemove branding, navigation, Steam login methods, and saved-account sidebar.
 - Saved-account metadata is loaded through Rust commands. Selecting an account
   fills the username; removal is confirmed and persisted. Passwords and stored
-  credential blobs are never returned to the frontend.
+  credential blobs are never returned to the frontend. Imported Steam avatars
+  are displayed from allowlisted HTTPS hosts, and the saved-account order can
+  be changed and persisted from the sidebar.
 - First launch imports legacy preferences and account metadata from the native
   OS configuration directory, without modifying the legacy store. Existing Rust
   settings are preserved. Imported accounts require fresh authentication.
@@ -29,7 +31,12 @@ performance, and first-class support for Steam + third-party market APIs.
   verification remains pending. Shared-secret login now validates Base64 input
   before networking and generates device-only TOTP codes locally with zeroizing
   secret ownership. Frontend credential buffers are cleared before awaiting IPC;
-  shared secrets are not persisted. QR and browser-token login remain unimplemented.
+  shared secrets are not persisted. QR login uses `steam-auth-rs`, with a locally
+  rendered challenge and optional keyring-backed refresh token. Browser-token
+  login uses `steam-client-rs` and a separate GC adapter; it is not remembered,
+  and that library does not provide equivalent token-zeroization guarantees.
+  Live-account verification of the new paths remains pending. Saved-account
+  order and allowlisted Steam avatar metadata are persisted.
 - Read-only inventory now uses a retained CS2 GC client and a bounded welcome
   cache parser. Connecting is explicit because it marks the Steam account as
   playing CS2. Requests time out after 30 seconds; sign-out cancels in-flight
@@ -44,17 +51,26 @@ performance, and first-class support for Steam + third-party market APIs.
   Asset IDs remain strings across IPC. Reward-preview objects are excluded as
   in the legacy converter. Wear/seed, nametags, rarity, and StatTrak
   presence are shown; full sticker/music/graffiti enrichment is not yet ported.
+- Read-only storage-unit contents now use the retained GC client. The native
+  command validates the storage ID against the loaded session inventory, reads
+  the expected count from attribute 270, and returns contents only after the GC
+  notification and matching item count. Empty results and errors are distinct;
+  concurrent inventory/contents calls are rejected, sign-out cancels in-flight
+  work, and the UI discards stale replies.
 - This is **not login or inventory parity**. Protocol/lifecycle/schema tests are
   offline; browser checks use a synthetic IPC test double. A live-account login
-  and inventory load have not been verified for this production integration.
-  Storage-unit contents, transfers, incremental SO-cache updates, connection-loss
-  events, and other authenticated pages remain unimplemented. The native
-  titlebar is retained; cross-platform packaging is not yet verified.
-- Next vertical slice: verify the production flow with a real account, then add
-  storage-unit contents and incremental inventory/connection events. The Phase 0 report in
-  `docs/metrics/spike-b.md` records the earlier real-account spike; do not treat
-  that as end-to-end verification of the production UI. Keep legacy code until
-  its matching workflow and characterization tests pass.
+  and storage-contents load have not been verified for this production
+  integration. The decoder reads `objects_added` and `objects_removed` from
+  unknown SO fields 4 and 5 because the bundled proto omits them; these field
+  numbers and stream behavior still require verification against CS2 GC traffic.
+  Transfers, incremental inventory/connection events, and other authenticated
+  pages remain unimplemented. The native titlebar is retained; cross-platform
+  packaging is not yet verified.
+- Next vertical slice: verify a non-empty storage unit and a move during loading
+  against a real account, then add incremental inventory/connection events. The
+  Phase 0 report in `docs/metrics/spike-b.md` records the earlier real-account
+  spike; do not treat that as end-to-end verification of this production UI.
+  Keep legacy code until its matching workflow and characterization tests pass.
 
 ## Strategy
 

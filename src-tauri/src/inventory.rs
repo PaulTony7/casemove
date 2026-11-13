@@ -1,5 +1,5 @@
 use app_commands::{InventoryItem, InventorySnapshot};
-use gc_cs2::{EconItem, InventoryClient};
+use gc_cs2::{EconItem, InventoryClient, InventoryError};
 use item_schema::ItemSchema;
 use tokio::sync::Mutex;
 
@@ -9,6 +9,7 @@ pub struct InventoryState(Mutex<Option<GcSlot<InventoryClient>>>);
 struct GcSlot<Client> {
     generation: u64,
     client: Option<Client>,
+    items: Vec<EconItem>,
 }
 
 fn clear_generation<Client>(slot: &mut Option<GcSlot<Client>>, generation: u64) {
@@ -35,6 +36,7 @@ fn prepare_slot<Client>(
     *slot = Some(GcSlot {
         generation,
         client: None,
+        items: Vec::new(),
     });
     Ok(true)
 }
@@ -117,6 +119,43 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     }
 }
 
+fn parse_storage_id(value: &str) -> Result<u64, String> {
+    let id = value
+        .parse::<u64>()
+        .map_err(|_| "Invalid storage-unit ID.".to_owned())?;
+    if id == 0 || id.to_string() != value {
+        return Err("Invalid storage-unit ID.".into());
+    }
+    Ok(id)
+}
+
+fn storage_item_count(items: &[EconItem], casket_id: u64) -> Result<u32, String> {
+    let storage = items
+        .iter()
+        .find(|item| item.id == casket_id && item.definition_index == 1201)
+        .ok_or_else(|| "The requested storage unit is not in the current inventory.".to_owned())?;
+    let Some(attribute) = storage
+        .attributes
+        .iter()
+        .find(|attribute| attribute.definition_index == 270)
+    else {
+        return Ok(0);
+    };
+    <[u8; 4]>::try_from(attribute.value.as_slice())
+        .map(u32::from_le_bytes)
+        .map_err(|_| "CS2 returned a malformed storage-unit contents count.".into())
+}
+
+fn storage_contents_error(error: InventoryError) -> String {
+    match error {
+        InventoryError::InvalidRequest => "Invalid storage-unit request.".into(),
+        InventoryError::ContentsMismatch => {
+            "CS2 returned incomplete or inconsistent storage-unit contents.".into()
+        }
+        error => error.to_string(),
+    }
+}
+
 #[tauri::command]
 pub async fn refresh_inventory(
     session: tauri::State<'_, crate::session::DesktopSession>,
@@ -133,16 +172,29 @@ pub async fn refresh_inventory(
             let attach = session.in_generation(generation, || prepare_slot(&mut state, generation))
                 .map_err(|error| error.to_string())??;
             let items = if attach {
-                let (client, items) = InventoryClient::connect(&connection).await
+                let connected = if let Some(browser_client) = connection.browser_client() {
+                    InventoryClient::connect_browser(browser_client).await
+                } else if let Some(steam_vent) = connection.steam_vent() {
+                    InventoryClient::connect(steam_vent).await
+                } else {
+                    return Err("The Steam connection is unavailable.".into());
+                };
+                let (client, items) = connected
                     .map_err(|error| format!("{error} Sign out of Steam and sign back in before reconnecting."))?;
                 session.in_generation(generation, || {
-                    *state = Some(GcSlot { generation, client: Some(client) });
+                    *state = Some(GcSlot { generation, client: Some(client), items: items.clone() });
                 }).map_err(|error| error.to_string())?;
                 items
             } else {
                 let client = state.as_ref().and_then(|slot| slot.client.as_ref())
                     .ok_or_else(|| "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting.".to_owned())?;
-                client.refresh().await.map_err(|error| error.to_string())?
+                let items = client.refresh().await.map_err(|error| error.to_string())?;
+                session.in_generation(generation, || {
+                    state.as_mut().filter(|slot| slot.generation == generation)
+                        .map(|slot| slot.items = items.clone())
+                }).map_err(|error| error.to_string())?
+                    .ok_or_else(|| "The Steam session changed. Load inventory again.".to_owned())?;
+                items
             };
             let mut rows = Vec::with_capacity(items.len());
             for item in items {
@@ -151,9 +203,49 @@ pub async fn refresh_inventory(
                 }
             }
             Ok(InventorySnapshot {
-                steam_id: connection.steam_id().steam64().to_string(),
+                steam_id: connection.steam_id(),
                 items: rows,
             })
+        })
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn storage_contents(
+    casket_id: String,
+    session: tauri::State<'_, crate::session::DesktopSession>,
+    inventory: tauri::State<'_, InventoryState>,
+    schema: tauri::State<'_, ItemSchema>,
+) -> Result<Vec<InventoryItem>, String> {
+    let casket_id = parse_storage_id(&casket_id)?;
+    let schema = &*schema;
+    let inventory = &*inventory;
+    session
+        .with_connection(|_connection, generation| async move {
+            let state = inventory.0.try_lock().map_err(|_| {
+                "An inventory or storage request is already in progress.".to_owned()
+            })?;
+            let slot = state
+                .as_ref()
+                .filter(|slot| slot.generation == generation)
+                .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+            let expected_count = storage_item_count(&slot.items, casket_id)?;
+            let client = slot.client.as_ref().ok_or_else(|| {
+                "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                    .to_owned()
+            })?;
+            let items = client
+                .storage_contents(casket_id, expected_count)
+                .await
+                .map_err(storage_contents_error)?;
+            let mut rows = Vec::with_capacity(items.len());
+            for item in items {
+                if is_owned_item(&item)? {
+                    rows.push(enrich_item(item, schema));
+                }
+            }
+            Ok(rows)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -221,6 +313,7 @@ mod tests {
         let mut slot = Some(GcSlot {
             generation: 3,
             client: Some(()),
+            items: Vec::new(),
         });
         clear_generation(&mut slot, 1);
         assert!(slot.as_ref().unwrap().client.is_some());
@@ -238,6 +331,39 @@ mod tests {
             assert!(!prepare_slot(&mut slot, 1).unwrap());
         }
         assert!(prepare_slot(&mut slot, 3).unwrap());
+    }
+
+    #[test]
+    fn storage_request_validates_ids_and_reads_count_attribute_as_little_endian() {
+        assert_eq!(parse_storage_id("18446744073709551614"), Ok(u64::MAX - 1));
+        for invalid in ["", "0", "01", "+1", " 1", "18446744073709551616"] {
+            assert!(parse_storage_id(invalid).is_err(), "accepted {invalid:?}");
+        }
+
+        let mut storage = item();
+        storage.id = 42;
+        storage.definition_index = 1201;
+        storage.attributes = vec![ItemAttribute {
+            definition_index: 270,
+            value: 0x0102_0304u32.to_le_bytes().to_vec(),
+        }];
+        assert_eq!(storage_item_count(&[storage.clone()], 42), Ok(0x0102_0304));
+        assert!(storage_item_count(&[storage.clone()], 43).is_err());
+
+        storage.attributes[0].value = vec![4, 3, 2];
+        assert!(storage_item_count(&[storage], 42).is_err());
+    }
+
+    #[test]
+    fn storage_gc_errors_map_to_actionable_ipc_messages() {
+        assert_eq!(
+            storage_contents_error(InventoryError::InvalidRequest),
+            "Invalid storage-unit request."
+        );
+        assert_eq!(
+            storage_contents_error(InventoryError::ContentsMismatch),
+            "CS2 returned incomplete or inconsistent storage-unit contents."
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 mod live;
 mod totp;
 
-pub use live::SteamClient;
+pub use live::{BrowserClientHandle, SteamClient, SteamConnection};
 
 use std::{future::Future, sync::Mutex, time::Duration};
 
@@ -13,6 +13,9 @@ pub struct Credentials {
     pub guard_code: Option<String>,
     pub refresh_token: Option<String>,
     pub shared_secret: Option<String>,
+    pub web_logon_token: Option<String>,
+    pub steam_id: Option<String>,
+    pub qr_challenge_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl Drop for Credentials {
@@ -22,6 +25,7 @@ impl Drop for Credentials {
         self.guard_code.zeroize();
         self.refresh_token.zeroize();
         self.shared_secret.zeroize();
+        self.web_logon_token.zeroize();
     }
 }
 
@@ -68,6 +72,10 @@ pub enum LoginError {
     ConnectionFailed,
     #[error("The Steam session could not be accessed.")]
     SessionUnavailable,
+    #[error("The browser login data is invalid or expired.")]
+    InvalidWebToken,
+    #[error("Steam QR login could not be started. Try again.")]
+    QrLoginFailed,
 }
 
 pub trait SteamTransport: Send + Sync {
@@ -155,13 +163,23 @@ impl<Transport: SteamTransport> SessionManager<Transport> {
         };
         let operation = async {
             let credentials = credentials.await?;
-            if credentials.account.trim().is_empty()
-                || (credentials.password.is_empty()
-                    && credentials
-                        .refresh_token
-                        .as_ref()
-                        .is_none_or(|token| token.is_empty()))
-            {
+            let qr_login = credentials.qr_challenge_tx.is_some();
+            let web_login = credentials
+                .web_logon_token
+                .as_ref()
+                .is_some_and(|token| !token.is_empty())
+                && credentials
+                    .steam_id
+                    .as_ref()
+                    .is_some_and(|steam_id| !steam_id.is_empty());
+            let has_credentials = !credentials.password.is_empty()
+                || credentials
+                    .refresh_token
+                    .as_ref()
+                    .is_some_and(|token| !token.is_empty())
+                || web_login
+                || qr_login;
+            if (!qr_login && credentials.account.trim().is_empty()) || !has_credentials {
                 return Err(LoginError::InvalidCredentials);
             }
             totp::validate_options(&credentials)?;
@@ -317,6 +335,9 @@ mod tests {
             guard_code: None,
             refresh_token: None,
             shared_secret: None,
+            web_logon_token: None,
+            steam_id: None,
+            qr_challenge_tx: None,
         }
     }
 

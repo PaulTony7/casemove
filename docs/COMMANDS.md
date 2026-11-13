@@ -25,8 +25,9 @@ Conventions:
 | `steam_login(params: PasswordLoginParams) -> SteamProfile` | `login` + `login-reply` | Password + manual Guard code, shared-secret device TOTP, or mobile approval. Guard code and shared secret are mutually exclusive. Remember saves only a refresh token to keyring; optional notice reports save failure. Live parity pending | ◐ |
 | `steam_login_saved(account) -> SteamProfile` | Saved-account login | Account name only in IPC; reads refresh token from native keyring inside cancellable login lifecycle. Live verification pending | ◐ |
 | `steam_session() -> Option<SteamProfile>` | Renderer auth state | Account and SteamID only; restores UI state after a frontend reload. Connection-loss events pending | ◐ |
-| `steam_start_qr_login(remember) -> LoginResult` | `startQRLogin` + `login-reply` | QR challenge pushed as `login:qr_challenge` event | ☐ |
-| `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | **Legacy bug**: preload sends `cancelQRLogin`, main listens `qrLogin:cancel` — never fires. Fixed by one name | ☐ |
+| `steam_start_qr_login(remember) -> SteamProfile` | `startQRLogin` + `login-reply` | QR challenge URL pushed as `login:qr_challenge`; sign-out cancels a pending login. Live verification pending | ◐ |
+| `steam_login_webtoken(params: BrowserTokenLoginParams) -> SteamProfile` | Browser-token login | Accepts browser login JSON transiently; validates `logged_in`, account, token, and SteamID. Uses `steam-client-rs`; token is not returned or remembered. Library token-zeroization parity and live verification pending | ◐ |
+| `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | Not ported as a separate command; `steam_sign_out()` cancels the shared pending-login lifecycle | ◐ |
 | `steam_force_login()` | `forceLogin` | Retry GC attach after `playingElsewhere`/timeout race | ☐ |
 | `steam_sign_out()` | `signOut` | Drops the retained connection or cancels pending login. Offline cancellation/relogin tests pass; live S6 gate pending | ◐ |
 | `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
@@ -37,7 +38,7 @@ Conventions:
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
 | `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Live-account and incremental-event parity pending | ◐ |
-| `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Converts + trade-up enriches; error path returns `Err` instead of `[0]` | ☐ |
+| `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Validates the ID against the loaded inventory, derives the expected count from attribute 270, and returns only notification-confirmed complete contents; errors return `Err` instead of `[0]` | ◐ |
 | `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ☐ |
 | `storage_remove_item(casket_id, item_id, fast) -> MoveAck` | `removeFromStorageUnit` + `-reply` | Same pattern, `CasketRemoved` | ☐ |
 | `storage_rename(item_id, new_name) -> MoveAck` | `renameStorageUnit` + `-reply` | `nameItem` + `NameItem` notification | ☐ |
@@ -61,9 +62,9 @@ Conventions:
 | `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | | ☐ |
 | `settings_get(key) -> Value` | `electron-store-get` + `-reply+randomKey` | Legacy appends a random key to the reply channel to dodge `once` collisions — `invoke` makes this unnecessary | ☐ |
 | `settings_set(key, value)` | `electron-store-set` | | ☐ |
-| `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name metadata only; no secrets returned. Avatar/position parity pending | ◐ |
+| `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name/Steam-avatar metadata only; no secrets returned | ◐ |
 | `store_delete_account(username) -> Vec<SavedAccount>` | `electron-store-deleteAccountDetails` | Removes keyring token and canonical account metadata; rollback restores the previous token if metadata deletion fails | ◐ |
-| `store_set_account_position(account, index)` | `electron-store-setAccountPosition` | | ☐ |
+| `store_set_account_position(username, index) -> Vec<SavedAccount>` | `electron-store-setAccountPosition` | Persists the canonical account order used by the saved-account sidebar | ◐ |
 | `check_update() -> UpdateInfo` | `needUpdate` + `needUpdate-reply` | Legacy caches a broken `gitHub` flag and replies `[false,…]` on error | ☐ |
 
 ### Window
@@ -87,7 +88,7 @@ entries never sent (`errorMain`, `checkSteam`, `closeSteam`, `login`,
 | `wallet:changed` | `userEvents` code 4 | `{ has_wallet, currency, balance }` | ☐ |
 | `pricing:results` | `pricing` | Price map keyed `item_name+wear` | ☐ |
 | `updater:status` | `updater` | `{ message }` | ☐ |
-| `login:qr_challenge` | `qrLogin:show` | QR challenge payload | ☐ |
+| `login:qr_challenge` | `qrLogin:show` | Steam QR challenge URL string; rendered locally into an SVG QR image | ◐ |
 
 ## Invariants (hard gates)
 

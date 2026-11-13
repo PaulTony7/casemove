@@ -25,11 +25,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             accounts::store_get_accounts,
             accounts::store_delete_account,
+            accounts::store_set_account_position,
             session::steam_login,
             session::steam_login_saved,
+            session::steam_login_webtoken,
+            session::steam_start_qr_login,
             session::steam_session,
             session::steam_sign_out,
-            inventory::refresh_inventory
+            inventory::refresh_inventory,
+            inventory::storage_contents
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

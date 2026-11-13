@@ -1,9 +1,12 @@
-use app_commands::{PasswordLoginParams, SteamProfile};
+use app_commands::{
+    BrowserTokenLoginParams, BrowserTokenPayload, LOGIN_QR_CHALLENGE, PasswordLoginParams,
+    SteamProfile,
+};
 use settings::SettingsStore;
 use std::sync::Mutex;
 use steam_core::{Credentials, Profile, SessionManager, SteamClient};
-use tauri::Manager;
-use zeroize::Zeroizing;
+use tauri::{Emitter, Manager};
+use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) type DesktopSession = SessionManager<SteamClient>;
 
@@ -13,6 +16,45 @@ fn profile_reply(profile: Profile) -> SteamProfile {
         steam_id: profile.steam_id,
         notice: None,
     }
+}
+
+async fn remember_session(
+    app: tauri::AppHandle,
+    session: &DesktopSession,
+    account: String,
+    login_generation: u64,
+) -> Result<(), String> {
+    session
+        .with_connection(|connection, generation| async move {
+            if generation != login_generation {
+                return Err(
+                    "The Steam session changed before this login could be remembered.".into(),
+                );
+            }
+            let token = connection
+                .access_token()
+                .filter(|token| !token.is_empty())
+                .map(|token| Zeroizing::new(token.to_owned()))
+                .ok_or_else(|| "Steam did not provide a reusable login token.".to_owned())?;
+            tauri::async_runtime::spawn_blocking(move || {
+                let session = app.state::<DesktopSession>();
+                let settings = app.state::<Mutex<SettingsStore>>();
+                let mut store = settings
+                    .lock()
+                    .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
+                crate::accounts::remember_login(&mut store, &account, &token, |store| {
+                    session
+                        .in_generation(generation, || {
+                            crate::accounts::save_account_metadata(store, &account)
+                        })
+                        .map_err(|error| error.to_string())?
+                })
+            })
+            .await
+            .map_err(|_| "The saved-login operation failed.".to_owned())?
+        })
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -29,45 +71,23 @@ pub async fn steam_login(
             guard_code: params.guard_code.take(),
             refresh_token: None,
             shared_secret: params.shared_secret.take(),
+            web_logon_token: None,
+            steam_id: None,
+            qr_challenge_tx: None,
         })
         .await
         .map_err(|error| error.to_string())?;
     let login_generation = profile.generation;
     let mut reply = profile_reply(profile);
     if remember {
-        let account = reply.account.clone();
-        let result = session
-            .with_connection(|connection, generation| async move {
-                if generation != login_generation {
-                    return Err(
-                        "The Steam session changed before this login could be remembered.".into(),
-                    );
-                }
-                let token = connection
-                    .access_token()
-                    .filter(|token| !token.is_empty())
-                    .map(|token| Zeroizing::new(token.to_owned()))
-                    .ok_or_else(|| "Steam did not provide a reusable login token.".to_owned())?;
-                tauri::async_runtime::spawn_blocking(move || {
-                    let session = app.state::<DesktopSession>();
-                    let settings = app.state::<Mutex<SettingsStore>>();
-                    let mut store = settings
-                        .lock()
-                        .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
-                    crate::accounts::remember_login(&mut store, &account, &token, |store| {
-                        session
-                            .in_generation(generation, || {
-                                crate::accounts::save_account_metadata(store, &account)
-                            })
-                            .map_err(|error| error.to_string())?
-                    })
-                })
-                .await
-                .map_err(|_| "The saved-login operation failed.".to_owned())?
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = result {
+        if let Err(error) = remember_session(
+            app.clone(),
+            &session,
+            reply.account.clone(),
+            login_generation,
+        )
+        .await
+        {
             reply.notice = Some(format!(
                 "Signed in, but this login was not remembered. {error}"
             ));
@@ -77,6 +97,92 @@ pub async fn steam_login(
         .in_generation(login_generation, || ())
         .map_err(|error| error.to_string())?;
     Ok(reply)
+}
+
+#[tauri::command]
+pub async fn steam_start_qr_login(
+    remember: bool,
+    session: tauri::State<'_, DesktopSession>,
+    app: tauri::AppHandle,
+) -> Result<SteamProfile, String> {
+    let (challenge_tx, mut challenge_rx) = tokio::sync::mpsc::unbounded_channel();
+    let event_app = app.clone();
+    let relay = tauri::async_runtime::spawn(async move {
+        match challenge_rx.recv().await {
+            Some(challenge) => event_app
+                .emit(LOGIN_QR_CHALLENGE, challenge)
+                .map_err(|error| error.to_string()),
+            None => Ok(()),
+        }
+    });
+    let result = session
+        .login(Credentials {
+            account: String::new(),
+            password: String::new(),
+            guard_code: None,
+            refresh_token: None,
+            shared_secret: None,
+            web_logon_token: None,
+            steam_id: None,
+            qr_challenge_tx: Some(challenge_tx),
+        })
+        .await;
+    let event_result = relay
+        .await
+        .map_err(|_| "Could not deliver the Steam QR challenge.".to_owned())?;
+    let profile = result.map_err(|error| error.to_string())?;
+    if let Err(error) = event_result {
+        let _ = session.sign_out_generation();
+        return Err(error);
+    }
+
+    let login_generation = profile.generation;
+    let mut reply = profile_reply(profile);
+    if remember
+        && let Err(error) =
+            remember_session(app, &session, reply.account.clone(), login_generation).await
+    {
+        reply.notice = Some(format!(
+            "Signed in, but this login was not remembered. {error}"
+        ));
+    }
+    session
+        .in_generation(login_generation, || ())
+        .map_err(|error| error.to_string())?;
+    Ok(reply)
+}
+
+#[tauri::command]
+pub async fn steam_login_webtoken(
+    mut params: BrowserTokenLoginParams,
+    session: tauri::State<'_, DesktopSession>,
+) -> Result<SteamProfile, String> {
+    let mut payload: BrowserTokenPayload = serde_json::from_str(&params.payload)
+        .map_err(|_| "The browser login data must be valid JSON.".to_owned())?;
+    params.payload.zeroize();
+    if !payload.logged_in {
+        return Err("Sign in to Steam in your browser and try again.".into());
+    }
+    if payload.account_name.trim().is_empty()
+        || payload.token.trim().is_empty()
+        || payload.steamid.trim().is_empty()
+    {
+        return Err("The browser login data is incomplete.".into());
+    }
+    session
+        .login(Credentials {
+            account: settings::secret::canonical_account(&payload.account_name),
+            password: String::new(),
+            guard_code: None,
+            refresh_token: None,
+            shared_secret: None,
+            web_logon_token: Some(std::mem::take(&mut payload.token)),
+            steam_id: Some(std::mem::take(&mut payload.steamid)),
+            qr_challenge_tx: None,
+        })
+        .await
+        .map(profile_reply)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -104,6 +210,9 @@ pub async fn steam_login_saved(
                 guard_code: None,
                 refresh_token: Some(token.to_string()),
                 shared_secret: None,
+                web_logon_token: None,
+                steam_id: None,
+                qr_challenge_tx: None,
             })
         })
         .await

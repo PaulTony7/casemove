@@ -18,10 +18,25 @@ fn rarity_name(rarity: u32) -> &'static str {
 }
 
 #[component]
-fn InventoryRow(item: InventoryItem) -> impl IntoView {
+fn InventoryRow(
+    item: InventoryItem,
+    on_open_storage: Option<Callback<(String, String)>>,
+) -> impl IntoView {
     let (image_failed, set_image_failed) = signal(false);
     let image = item.image_url.unwrap_or_default();
     let has_image = !image.is_empty();
+    let storage_action = on_open_storage
+        .filter(|_| item.is_storage_unit)
+        .map(|callback| {
+            let id = item.id.clone();
+            let name = item.name.clone();
+            view! {
+                <button class="storage-open" aria-label=format!("View contents of {}", name)
+                    on:click=move |_| callback.run((id.clone(), name.clone()))>
+                    <Icon icon=icondata::LuFolderOpen/>"Contents"
+                </button>
+            }
+        });
     view! {
         <tr>
             <td class="inventory-item-cell">
@@ -47,6 +62,7 @@ fn InventoryRow(item: InventoryItem) -> impl IntoView {
             <td class="numeric">{item.paint_seed.map(|seed| seed.to_string()).unwrap_or_else(|| "-".into())}</td>
             <td class="numeric">{item.quantity}</td>
             <td class="item-id">{item.id}</td>
+            <td>{storage_action}</td>
         </tr>
     }
 }
@@ -56,6 +72,12 @@ pub fn InventoryView(
     snapshot: ReadSignal<Option<InventorySnapshot>>,
     busy: ReadSignal<bool>,
     error: ReadSignal<String>,
+    storage_selection: ReadSignal<Option<(String, String)>>,
+    storage_contents: ReadSignal<Option<Vec<InventoryItem>>>,
+    storage_busy: ReadSignal<bool>,
+    storage_error: ReadSignal<String>,
+    on_open_storage: Callback<(String, String)>,
+    on_close_storage: Callback<()>,
     on_refresh: Callback<()>,
     on_sign_out: Callback<()>,
 ) -> impl IntoView {
@@ -113,18 +135,51 @@ pub fn InventoryView(
     view! {
         <main class="inventory-view" aria-labelledby="inventory-heading">
             <header class="inventory-header">
-                <div><h1 id="inventory-heading">"Inventory"</h1>
-                    <p class="inventory-status" role="status">{move || if busy.get() {
+                <div><h1 id="inventory-heading">{move || if storage_selection.get().is_some() { "Storage contents" } else { "Inventory" }}</h1>
+                    <p class="inventory-status" role="status">{move || if storage_selection.get().is_some() {
+                        if storage_busy.get() { "Loading storage contents...".into() }
+                        else { storage_contents.with(|value| value.as_ref().map(|items| format!("{} items", items.len())).unwrap_or_else(|| "Contents not loaded".into())) }
+                    } else if busy.get() {
                         "Waiting for the CS2 Game Coordinator...".into()
                     } else { snapshot.with(|value| value.as_ref().map(|snapshot| format!("{} items loaded", snapshot.items.len())).unwrap_or_else(|| "Not loaded".into())) }}</p>
                 </div>
                 <div class="inventory-actions">
-                    <button class="inventory-command primary-command" disabled=move || busy.get() on:click=move |_| on_refresh.run(())>
-                        <Icon icon=icondata::LuRefreshCw/>{move || if busy.get() { "Loading..." } else if snapshot.get().is_some() { "Refresh" } else { "Connect to CS2" }}
-                    </button>
+                    <Show when=move || storage_selection.get().is_none() fallback=move || view! {
+                        <button class="inventory-command" on:click=move |_| on_close_storage.run(())>
+                            <Icon icon=icondata::LuArrowLeft/>"Inventory"
+                        </button>
+                    }>
+                        <button class="inventory-command primary-command" disabled=move || busy.get() on:click=move |_| on_refresh.run(())>
+                            <Icon icon=icondata::LuRefreshCw/>{move || if busy.get() { "Loading..." } else if snapshot.get().is_some() { "Refresh" } else { "Connect to CS2" }}
+                        </button>
+                    </Show>
                     <button class="icon-button" title="Sign out" aria-label="Sign out" on:click=move |_| on_sign_out.run(())><Icon icon=icondata::LuLogOut/></button>
                 </div>
             </header>
+            <Show when=move || storage_selection.get().is_some()>
+                <section class="storage-contents" aria-label="Storage unit contents">
+                    <p class="storage-parent">{move || storage_selection.get().map(|(_, name)| name).unwrap_or_default()}</p>
+                    <Show when=move || !storage_error.get().is_empty()>
+                        <div class="inventory-error" role="alert"><strong>{move || storage_error.get()}</strong></div>
+                    </Show>
+                    <Show when=move || storage_contents.get().as_ref().is_some_and(Vec::is_empty)>
+                        <div class="inventory-empty"><Icon icon=icondata::LuArchive/><h2>"Storage unit is empty"</h2></div>
+                    </Show>
+                    <Show when=move || storage_contents.get().as_ref().is_some_and(|items| !items.is_empty())>
+                        <div class="inventory-table-scroll" tabindex="0" role="region" aria-label="Storage unit items">
+                            <table class="inventory-table"><thead><tr>
+                                <th scope="col">"Item"</th><th scope="col">"Rarity"</th><th scope="col">"Wear / Float"</th>
+                                <th scope="col">"Seed"</th><th scope="col">"Qty"</th><th scope="col">"Item ID"</th><th scope="col">"Actions"</th>
+                            </tr></thead><tbody>
+                                <For each=move || storage_contents.with(|value| value.clone().unwrap_or_default())
+                                    key=|item| (item.id.clone(), item.name.clone(), item.custom_name.clone())
+                                    children=move |item| view! { <InventoryRow item=item on_open_storage=None/> }/>
+                            </tbody></table>
+                        </div>
+                    </Show>
+                </section>
+            </Show>
+            <Show when=move || storage_selection.get().is_none()>
             <Show when=move || snapshot.get().is_none()>
                 <p class="gc-session-notice"><Icon icon=icondata::LuInfo/><span>"Close any running game before connecting. Steam will mark this account as playing CS2."</span></p>
             </Show>
@@ -156,12 +211,12 @@ pub fn InventoryView(
                     <div class="inventory-table-scroll" tabindex="0" role="region" aria-label="Inventory items">
                         <table class="inventory-table"><thead><tr>
                             <th scope="col">"Item"</th><th scope="col">"Rarity"</th><th scope="col">"Wear / Float"</th>
-                            <th scope="col">"Seed"</th><th scope="col">"Qty"</th><th scope="col">"Item ID"</th>
+                            <th scope="col">"Seed"</th><th scope="col">"Qty"</th><th scope="col">"Item ID"</th><th scope="col">"Actions"</th>
                         </tr></thead><tbody>
                             <For each=move || filtered.with(|items| items.iter().skip(page.get().min(pages.get() - 1) * PAGE_SIZE).take(PAGE_SIZE).cloned().collect::<Vec<_>>())
                                 key=|item| (item.id.clone(), item.name.clone(), item.custom_name.clone(), item.image_url.clone(),
                                     (item.quantity, item.rarity, item.wear.map(f64::to_bits), item.wear_name.clone(), item.paint_seed, item.stat_trak, item.is_storage_unit))
-                                children=move |item| view! { <InventoryRow item=item/> }/>
+                                children=move |item| view! { <InventoryRow item=item on_open_storage=Some(on_open_storage)/> }/>
                         </tbody></table>
                     </div>
                     <footer class="inventory-pagination">
@@ -175,6 +230,7 @@ pub fn InventoryView(
             </Show>
             <Show when=move || snapshot.get().is_none() && !busy.get() && error.get().is_empty()>
                 <div class="inventory-empty"><Icon icon=icondata::LuArchive/><h2>"Inventory not loaded"</h2></div>
+            </Show>
             </Show>
         </main>
     }

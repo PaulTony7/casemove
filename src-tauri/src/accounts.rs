@@ -174,10 +174,22 @@ fn list_accounts(store: &SettingsStore) -> Vec<SavedAccount> {
                     .and_then(Value::as_str)
                     .unwrap_or(&username)
                     .to_owned(),
+                image_url: entry
+                    .get("imageURL")
+                    .and_then(Value::as_str)
+                    .filter(|url| is_steam_avatar_url(url))
+                    .map(str::to_owned),
                 username,
                 has_saved_login: false,
             });
         account.has_saved_login |= has_saved_login;
+        if account.image_url.is_none() {
+            account.image_url = entry
+                .get("imageURL")
+                .and_then(Value::as_str)
+                .filter(|url| is_steam_avatar_url(url))
+                .map(str::to_owned);
+        }
     }
     let mut accounts: Vec<_> = unique.into_values().collect();
     accounts.sort_by_key(|account| {
@@ -187,6 +199,41 @@ fn list_accounts(store: &SettingsStore) -> Vec<SavedAccount> {
             .unwrap_or(usize::MAX)
     });
     accounts
+}
+
+fn is_steam_avatar_url(url: &str) -> bool {
+    [
+        "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/",
+        "https://avatars.steamstatic.com/",
+        "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/avatars/",
+    ]
+    .iter()
+    .any(|prefix| url.starts_with(prefix))
+}
+
+fn set_account_position(
+    store: &mut SettingsStore,
+    username: &str,
+    index: usize,
+) -> Result<Vec<SavedAccount>, String> {
+    let mut order: Vec<_> = list_accounts(store)
+        .into_iter()
+        .map(|account| account.username)
+        .collect();
+    let username = settings::secret::canonical_account(username);
+    let current_index = order
+        .iter()
+        .position(|account| account == &username)
+        .ok_or_else(|| "The saved account no longer exists.".to_owned())?;
+    if index >= order.len() {
+        return Err("The requested account position is invalid.".into());
+    }
+    let account = order.remove(current_index);
+    order.insert(index, account);
+    store
+        .set("accountKeyList", order)
+        .map_err(|error| error.to_string())?;
+    Ok(list_accounts(store))
 }
 
 fn remove_account(store: &mut SettingsStore, username: &str) -> Result<(), String> {
@@ -216,6 +263,16 @@ pub fn store_delete_account(
     let mut store = store.lock().map_err(|error| error.to_string())?;
     forget_with_vault(&mut store, &login_vault(), &username)?;
     Ok(list_accounts(&store))
+}
+
+#[tauri::command]
+pub fn store_set_account_position(
+    username: String,
+    index: usize,
+    store: tauri::State<'_, Mutex<SettingsStore>>,
+) -> Result<Vec<SavedAccount>, String> {
+    let mut store = store.lock().map_err(|error| error.to_string())?;
+    set_account_position(&mut store, &username, index)
 }
 
 #[cfg(test)]
@@ -366,6 +423,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn account_order_is_persisted_and_avatars_are_limited_to_steam_hosts() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(directory.path().join("settings.json")).unwrap();
+        store
+            .set(
+                "account",
+                serde_json::json!({
+                    "alice": {"displayName": "Alice", "imageURL": "https://avatars.steamstatic.com/alice_medium.jpg"},
+                    "bob": {"displayName": "Bob", "imageURL": "https://example.org/avatar.png"}
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            list_accounts(&store)[0].image_url.as_deref(),
+            Some("https://avatars.steamstatic.com/alice_medium.jpg")
+        );
+        assert_eq!(list_accounts(&store)[1].image_url, None);
+
+        let accounts = set_account_position(&mut store, " ALICE ", 1).unwrap();
+        assert_eq!(
+            accounts
+                .iter()
+                .map(|account| account.username.as_str())
+                .collect::<Vec<_>>(),
+            ["bob", "alice"]
+        );
+        let reopened = SettingsStore::open(directory.path().join("settings.json")).unwrap();
+        assert_eq!(
+            reopened.get::<Vec<String>>("accountKeyList").unwrap(),
+            ["bob", "alice"]
+        );
+    }
+
+    #[test]
+    fn account_order_rejects_missing_names_and_out_of_range_positions() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(directory.path().join("settings.json")).unwrap();
+        store
+            .set(
+                "account",
+                serde_json::json!({"alice": {"displayName": "Alice"}}),
+            )
+            .unwrap();
+
+        assert!(set_account_position(&mut store, "missing", 0).is_err());
+        assert!(set_account_position(&mut store, "alice", 1).is_err());
+        assert_eq!(store.get::<Vec<String>>("accountKeyList"), None);
+    }
+
     struct BlockingVault {
         tokens: Mutex<HashMap<String, String>>,
         replaced: std::sync::Barrier,
@@ -437,6 +545,9 @@ mod tests {
                 guard_code: None,
                 refresh_token: None,
                 shared_secret: None,
+                web_logon_token: None,
+                steam_id: None,
+                qr_challenge_tx: None,
             };
             let generation = session.login(credentials()).await.unwrap().generation;
             let stale_metadata = Arc::new(AtomicBool::new(false));
