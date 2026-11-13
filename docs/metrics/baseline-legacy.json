@@ -6,7 +6,11 @@
         "min": 20011.0,
         "p50": 20011.0,
         "p95": 20011.0,
-        "max": 20011.0
+        "max": 20011.0,
+        "samples_ms": [
+          20011,
+          18531
+        ]
       }
     },
     "S2": {
@@ -15,7 +19,11 @@
         "min": 16870.0,
         "p50": 16870.0,
         "p95": 16870.0,
-        "max": 16870.0
+        "max": 16870.0,
+        "samples_ms": [
+          16870,
+          16596
+        ]
       }
     }
   },
@@ -24,5 +32,5 @@
       "[[\"error\",1],[\"electron-store-get-data\",1],[\"__ELECTRON_LOG_IPC_default__\",1],[\"ipc-example\",1],[\"windowsActions\",1],[\"needUpdate\",1],[\"login\",1],[\"startQRLogin\",1],[\"qrLogin:cancel\",1],[\"getCurrency\",1],[\"electron-store-getAccountDetails\",1],[\"electron-store-deleteAccountDetails\",1],[\"electron-store-setAccountPosition\",1],[\"electron-store-get\",1],[\"electron-store-set\",1],[\"download\",1],[\"getPrice\",1],[\"getTradeUpPossible\",1],[\"processTradeOrder\",1],[\"openContainer\",1],[\"refreshInventory\",1],[\"retryConnection\",1],[\"renameStorageUnit\",1],[\"setItemsPositions\",1],[\"setItemEquipped\",1],[\"removeFromStorageUnit\",1],[\"moveToStorageUnit\",1],[\"getCasketContents\",1],[\"signOut\",1]]"
     ]
   },
-  "notes": "Partial baseline from dev-mode run (npm start, ELECTRON_ENABLE_LOGGING=1) on 2026-11-13. S1 is dev-mode cold start (includes ts-node + webpack dev compile); a prod build is needed for the comparable S1 number. Missing: S3 (storage contents), S4 (filter/sort), S5 (bulk move), S6 second login + signout snapshots. Known legacy issues observed: items_game fetch missing https:// scheme (always falls back to bundled 2022 schema -> itemProcessor TypeErrors), devtools CRX install failure, currency getRate unhandled rejection on first run."
+  "notes": "Baseline runs 1-2 (S1/S2 only; run 2 at 00:56 confirmed no item-parser errors \u2014 run 1 hit a transient schema fetch failure). Still missing from dev-mode run (npm start, ELECTRON_ENABLE_LOGGING=1) on 2026-11-13. S1 is dev-mode cold start (includes ts-node + webpack dev compile); a prod build is needed for the comparable S1 number. Missing: S3 (storage contents), S4 (filter/sort), S5 (bulk move), S6 second login + signout snapshots. Known legacy issues observed: items_game fetch missing https:// scheme (always falls back to bundled 2022 schema -> itemProcessor TypeErrors), devtools CRX install failure, currency getRate unhandled rejection on first run."
 }
