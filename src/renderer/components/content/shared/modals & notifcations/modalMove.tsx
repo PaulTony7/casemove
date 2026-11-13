@@ -17,6 +17,8 @@ import {
 } from 'renderer/store/actions/moveFromActions';
 import { Link } from 'react-router-dom';
 
+let moveBatchStart = 0;
+
 export default function MoveModal() {
   const waitTime = 100;
   // const [hasRun, setRun] = useState(false);
@@ -25,6 +27,7 @@ export default function MoveModal() {
   const dispatch = useDispatch();
   const modalData = useSelector((state: any) => state.modalMoveReducer);
   async function cancelMe() {
+    moveBatchStart = 0;
     window.electron.ipcRenderer.refreshInventory();
     dispatch(closeMoveModal());
     dispatch(cancelModal(modalData.modalPayload['key']));
@@ -43,6 +46,9 @@ export default function MoveModal() {
   const fastMode = false;
 
   async function runModal() {
+    if (moveBatchStart === 0) {
+      moveBatchStart = Date.now();
+    }
     if (modalData.moveOpen) {
       if (modalData.doCancel.includes(modalData.modalPayload['key']) == false) {
         if (modalData.modalPayload['type'] == 'to') {
@@ -94,6 +100,15 @@ export default function MoveModal() {
           dispatch(moveModalUpdate());
         }
         if (modalData.modalPayload['isLast']) {
+          console.log(
+            'PERF|S5|move_batch|' +
+              (Date.now() - moveBatchStart) +
+              '|number=' +
+              modalData.modalPayload['number'] +
+              '|failed=' +
+              modalData.totalFailed
+          );
+          moveBatchStart = 0;
           window.electron.ipcRenderer.refreshInventory();
         }
       }

@@ -119,6 +119,7 @@ export async function filterInventoryd(
   prices,
   pricingSource
 ) {
+  const T_FILTER = performance.now();
   const thisInventory = [] as any;
   // First Categories
   let totalTwo = 0;
@@ -192,6 +193,12 @@ export async function filterInventoryd(
     pricingSource
   );
 
+  console.log(
+    'PERF|S4|filter_sort|' +
+      (performance.now() - T_FILTER).toFixed(1) +
+      '|n=' +
+      combinedInventory.length
+  );
   return combinedInventory;
 }
 export function classNames(...classes) {

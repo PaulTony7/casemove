@@ -40,6 +40,9 @@ autoUpdater.logger = log;
 autoUpdater.logger.transports.file.level = 'info';
 log.info('App starting...');
 
+// Baseline metrics: process start reference (see docs/REWRITE_PLAN.md)
+const T_APP_START = performance.timeOrigin;
+
 app.on('ready', function () {
   autoUpdater.checkForUpdatesAndNotify();
 });
@@ -196,6 +199,7 @@ const createWindow = async () => {
   mainWindow.loadURL(resolveHtmlPath('index.html'));
 
   mainWindow.on('ready-to-show', () => {
+    console.log('PERF|S1|ready_to_show|' + Math.round(Date.now() - T_APP_START));
     console.log(app.getVersion());
     if (!mainWindow) {
       throw new Error('"mainWindow" is not defined');
@@ -362,6 +366,10 @@ ipcMain.on('needUpdate', async (event: any) => {
 // Return 5 = Unknown
 // Return 6 = Error with loginkey
 async function sendLoginReply(event: any) {
+  console.log(
+    'PERF|S2|login_reply_gc|' +
+      (Date.now() - ((event as any).__tLogin ?? Date.now()))
+  );
   event.reply('login-reply', ClassLoginResponse.returnValue);
 }
 
@@ -568,6 +576,7 @@ ipcMain.on(
     secretKey = null,
     clientjstoken = null
   ) => {
+    (event as any).__tLogin = Date.now();
     let user = new SteamUser();
     let csgo = new GlobalOffensive(user);
     emitterAccount.emit(
@@ -592,6 +601,10 @@ ipcMain.on(
       )
       .then((returnValue: any) => {
         console.log(returnValue);
+        console.log(
+          'PERF|S2|login_reply_credentials|' +
+            (Date.now() - ((event as any).__tLogin ?? Date.now()))
+        );
         event.reply('login-reply', returnValue);
       });
   }
@@ -601,6 +614,7 @@ emitterAccount.on('qrLogin:show', async (qrChallengeLogin) => {
   mainWindow?.webContents.send('qrLogin:show', qrChallengeLogin);
 });
 ipcMain.on('startQRLogin', async (event, shouldRemember) => {
+  (event as any).__tLogin = Date.now();
   let user = new SteamUser();
   let csgo = new GlobalOffensive(user);
   let loginClass = new login();
@@ -630,6 +644,10 @@ ipcMain.on('startQRLogin', async (event, shouldRemember) => {
         returnValue.session.refreshToken
       )
       .then((returnValue: any) => {
+        console.log(
+          'PERF|S2|login_reply_qr|' +
+            (Date.now() - ((event as any).__tLogin ?? Date.now()))
+        );
         event.reply('login-reply', returnValue);
       });
   });
@@ -936,15 +954,23 @@ async function startEvents(csgo, user) {
 
   // Get storage unit contents
   ipcMain.on('getCasketContents', async (event, casketID, _casketName) => {
+    const T_CASKET = Date.now();
     await csgo.getCasketContents(casketID, async function (err, items) {
       fetchItemClass.convertStorageData(items).then((returnValue) => {
         tradeUpClass.getTradeUp(returnValue).then((newReturnValue: any) => {
           event.reply('getCasketContent-reply', [1, newReturnValue]);
+          console.log(
+            'PERF|S3|casket_contents|' +
+              (Date.now() - T_CASKET) +
+              '|n=' +
+              newReturnValue.length
+          );
           console.log('Casket contains: ', newReturnValue.length);
         });
       });
 
       if (err) {
+        console.log('PERF|S3|casket_contents_error|' + (Date.now() - T_CASKET));
         event.reply('getCasketContent-reply', [0]);
       }
     });
@@ -953,6 +979,12 @@ async function startEvents(csgo, user) {
   ipcMain.on('signOut', async () => {
     clearForNewSession();
   });
+  console.log(
+    'PERF|S6|listeners_after_login|' +
+      JSON.stringify(
+        ipcMain.eventNames().map((n) => [String(n), ipcMain.listenerCount(n)])
+      )
+  );
 
   async function clearForNewSession() {
     console.log('Signout');
@@ -975,6 +1007,14 @@ async function startEvents(csgo, user) {
     ipcMain.removeAllListeners('getCasketContents');
     ipcMain.removeAllListeners('signOut');
     ipcMain.removeAllListeners('forceLogin');
+    console.log(
+      'PERF|S6|listeners_after_signout|' +
+        JSON.stringify(
+          ipcMain
+            .eventNames()
+            .map((n) => [String(n), ipcMain.listenerCount(n)])
+        )
+    );
   }
 }
 
