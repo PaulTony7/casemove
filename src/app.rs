@@ -1,5 +1,7 @@
+use crate::inventory::InventoryView;
 use app_commands::{
-    PasswordLoginParams, STEAM_LOGIN, STEAM_SESSION, STEAM_SIGN_OUT, SavedAccount, SteamProfile,
+    InventorySnapshot, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_SESSION,
+    STEAM_SIGN_OUT, SavedAccount, SteamProfile,
 };
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_icons::Icon;
@@ -50,6 +52,10 @@ pub fn App() -> impl IntoView {
     let (login_error, set_login_error) = signal(String::new());
     let (login_busy, set_login_busy) = signal(false);
     let (session_busy, set_session_busy) = signal(false);
+    let (inventory_open, set_inventory_open) = signal(false);
+    let (inventory, set_inventory) = signal(None::<InventorySnapshot>);
+    let (inventory_busy, set_inventory_busy) = signal(false);
+    let (inventory_error, set_inventory_error) = signal(String::new());
     let attempt = RwSignal::new(0u64);
     let password_input = NodeRef::<leptos::html::Input>::new();
     let guard_input = NodeRef::<leptos::html::Input>::new();
@@ -165,11 +171,15 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    let sign_out = move |_| {
+    let sign_out = Callback::new(move |()| {
         if session_busy.get_untracked() {
             return;
         }
         attempt.update(|value| *value += 1);
+        set_inventory.set(None);
+        set_inventory_open.set(false);
+        set_inventory_error.set(String::new());
+        set_inventory_busy.set(false);
         set_session_busy.set(true);
         spawn_local(async move {
             match desktop_command::<()>(STEAM_SIGN_OUT, JsValue::NULL).await {
@@ -182,12 +192,46 @@ pub fn App() -> impl IntoView {
             set_login_busy.set(false);
             set_session_busy.set(false);
         });
-    };
+    });
+
+    let refresh_inventory = Callback::new(move |()| {
+        if inventory_busy.get_untracked()
+            || session_busy.get_untracked()
+            || profile.get_untracked().is_none()
+        {
+            return;
+        }
+        let current_attempt = attempt.get_untracked();
+        set_inventory_busy.set(true);
+        set_inventory_error.set(String::new());
+        spawn_local(async move {
+            let result =
+                desktop_command::<InventorySnapshot>(REFRESH_INVENTORY, JsValue::NULL).await;
+            if attempt.get_untracked() != current_attempt {
+                return;
+            }
+            match result {
+                Ok(snapshot) => {
+                    if profile
+                        .get_untracked()
+                        .is_some_and(|profile| profile.steam_id == snapshot.steam_id)
+                    {
+                        set_inventory.set(Some(snapshot));
+                    } else {
+                        set_inventory_error
+                            .set("The Steam session changed. Load inventory again.".into());
+                    }
+                }
+                Err(error) => set_inventory_error.set(error),
+            }
+            set_inventory_busy.set(false);
+        });
+    });
 
     view! {
         <div class="app-shell">
             <header class="mobile-header">
-                <a class="brand" href="#/signin"><img src="public/casemove.svg" alt=""/>"casemove"</a>
+                <a class="brand" href="#/signin" on:click=move |_| { set_inventory_open.set(false); set_mobile_menu.set(false); }><img src="public/casemove.svg" alt=""/>"casemove"</a>
                 <button class="icon-button" aria-label="Toggle navigation" title="Toggle navigation"
                     aria-expanded=move || mobile_menu.get().to_string()
                     on:click=move |_| set_mobile_menu.update(|open| *open = !*open)>
@@ -195,7 +239,7 @@ pub fn App() -> impl IntoView {
                 </button>
             </header>
             <aside class="sidebar" class:mobile-open=move || mobile_menu.get()>
-                <a class="brand" href="#/signin"><img src="public/casemove.svg" alt=""/>"casemove"</a>
+                <a class="brand" href="#/signin" on:click=move |_| { set_inventory_open.set(false); set_mobile_menu.set(false); }><img src="public/casemove.svg" alt=""/>"casemove"</a>
                 <div class="session-summary">
                     <div class="avatar"><Icon icon=icondata::LuUserRound/></div>
                     <div><strong>{move || profile.get().map(|value| value.account).unwrap_or_else(|| "Steam account".into())}</strong>
@@ -211,11 +255,15 @@ pub fn App() -> impl IntoView {
                         ("Transfer | To", icondata::LuUpload),
                         ("Inventory", icondata::LuArchive),
                     ] key=|(name, _)| *name children=move |(name, icon)| view! {
-                        <button class="nav-item" disabled title=move || if profile.get().is_some() { "CS2 inventory is not connected yet" } else { "Sign in to Steam first" }><Icon icon=icon/>{name}</button>
+                        <button class="nav-item" class:nav-current=move || name == "Inventory" && inventory_open.get()
+                            disabled=move || name != "Inventory" || profile.get().is_none() || session_busy.get()
+                            title=move || if profile.get().is_none() { "Sign in to Steam first" } else if name == "Inventory" { "Inventory" } else { "This page has not been ported yet" }
+                            on:click=move |_| { set_inventory_open.set(true); set_mobile_menu.set(false); }><Icon icon=icon/>{name}</button>
                     }/>
                 </nav>
                 <div class="sidebar-bottom"><Icon icon=icondata::LuShieldCheck/><span>"Casemove"<small>"v0.1.0"</small></span></div>
             </aside>
+            <Show when=move || !inventory_open.get()>
             <main class="login-layout">
                 <section class="login-main" aria-labelledby="login-heading">
                     <div class="login-content">
@@ -225,9 +273,11 @@ pub fn App() -> impl IntoView {
                                 <h1 id="login-heading">"Steam session established"</h1>
                                 <strong>{move || profile.get().map(|value| value.account).unwrap_or_default()}</strong>
                                 <p class="steam-id">{move || profile.get().map(|value| value.steam_id).unwrap_or_default()}</p>
-                                <p class="service-status" role="status">"CS2 inventory is not connected yet."</p>
+                                <button class="sign-in open-inventory" disabled=move || session_busy.get() on:click=move |_| set_inventory_open.set(true)>
+                                    <Icon icon=icondata::LuArchive/>"Inventory"
+                                </button>
                                 <Show when=move || !login_error.get().is_empty()><p role="alert" class="account-error">{move || login_error.get()}</p></Show>
-                                <button class="sign-in" disabled=move || session_busy.get() on:click=sign_out>
+                                <button class="sign-in" disabled=move || session_busy.get() on:click=move |_| sign_out.run(())>
                                     <Icon icon=icondata::LuLogOut/>{move || if session_busy.get() { "Signing out..." } else { "Sign out" }}
                                 </button>
                             </div>
@@ -309,7 +359,7 @@ pub fn App() -> impl IntoView {
                                     <Icon icon=icondata::LuLockKeyhole/>{move || if login_busy.get() { "Connecting..." } else { "Sign in" }}
                                 </button>
                                 <Show when=move || login_busy.get()>
-                                    <button class="cancel-login" type="button" disabled=move || session_busy.get() on:click=sign_out>"Cancel login"</button>
+                                    <button class="cancel-login" type="button" disabled=move || session_busy.get() on:click=move |_| sign_out.run(())>"Cancel login"</button>
                                 </Show>
                             </form>
                         </div>
@@ -347,6 +397,10 @@ pub fn App() -> impl IntoView {
                     </ul>
                 </aside>
             </main>
+            </Show>
+            <Show when=move || inventory_open.get() && profile.get().is_some()>
+                <InventoryView snapshot=inventory busy=inventory_busy error=inventory_error on_refresh=refresh_inventory on_sign_out=sign_out/>
+            </Show>
                     <dialog class="confirm-dialog" node_ref=confirmation role="alertdialog" aria-labelledby="remove-heading" aria-describedby="remove-description"
                         on:keydown=move |event: leptos::ev::KeyboardEvent| {
                             if event.key() == "Escape" {

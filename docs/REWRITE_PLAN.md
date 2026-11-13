@@ -25,14 +25,28 @@ performance, and first-class support for Steam + third-party market APIs.
 - Native password/code buffers are zeroized on drop; no credentials or tokens
   are returned in session replies or persisted by this login slice. Remember,
   shared-secret, QR, and browser-token login remain disabled.
-- This is **not login or inventory parity**. The production integration has
-  offline tests for lifecycle, Guard selection, and error mapping, plus browser
-  UI checks using a synthetic IPC test double. A live-account login has not been
-  verified for this integration. GC inventory, transfers, connection-loss
-  events, and authenticated pages remain unimplemented. The native titlebar is
-  retained; cross-platform packaging is not yet verified.
-- Next vertical slice: attach the CS2 GC to the retained connection and surface
-  real inventory and connection events. The Phase 0 report in
+- Read-only inventory now uses a retained CS2 GC client and a bounded welcome
+  cache parser. Connecting is explicit because it marks the Steam account as
+  playing CS2. Requests time out after 30 seconds; sign-out cancels in-flight
+  work and invalidates only that session's client. Failed refreshes preserve the
+  last UI snapshot and reuse the existing dispatcher. A failed initial attach
+  requires sign-out/re-login: this avoids repeatedly creating detached dispatch
+  tasks on one Steam connection in `steam-vent` 0.5.0.
+- The inventory table supports search, name/rarity/float sorting, storage-unit
+  filtering, and 50-row pagination. Names and paint finishes resolve from the
+  bundled legacy schema; unknown items remain visible. Exact hashed thumbnails
+  are used where the bundled catalog has one; other items show a fallback icon.
+  Asset IDs remain strings across IPC. Reward-preview objects are excluded as
+  in the legacy converter. Wear/seed, nametags, rarity, and StatTrak
+  presence are shown; full sticker/music/graffiti enrichment is not yet ported.
+- This is **not login or inventory parity**. Protocol/lifecycle/schema tests are
+  offline; browser checks use a synthetic IPC test double. A live-account login
+  and inventory load have not been verified for this production integration.
+  Storage-unit contents, transfers, incremental SO-cache updates, connection-loss
+  events, and other authenticated pages remain unimplemented. The native
+  titlebar is retained; cross-platform packaging is not yet verified.
+- Next vertical slice: verify the production flow with a real account, then add
+  storage-unit contents and incremental inventory/connection events. The Phase 0 report in
   `docs/metrics/spike-b.md` records the earlier real-account spike; do not treat
   that as end-to-end verification of the production UI. Keep legacy code until
   its matching workflow and characterization tests pass.

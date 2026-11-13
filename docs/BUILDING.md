@@ -50,12 +50,22 @@ in the desktop app. Regular login accepts a username/password and an optional
 Steam Guard code; Steam may instead request approval in its mobile app. Login
 times out after 120 seconds and can be cancelled. Password and code fields clear
 on submission. This slice does not persist credentials or support saved-token,
-shared-secret, QR, or browser-token login. CS2 inventory is not yet connected.
+shared-secret, QR, or browser-token login.
+
+After signing in, open Inventory and choose Connect to CS2. Close running games
+first: the GC handshake marks this account as playing CS2. The read-only snapshot
+includes item names, wear, seed, nametags, and IDs; search/filter/sort and paging
+operate locally. Refresh has a 30-second GC timeout and reuses the established
+GC dispatcher. If the initial connection fails, sign out and sign back in before
+reconnecting; do not repeatedly create coordinators on one Steam session.
+Sign-out cancels requests and clears the displayed snapshot. Storage
+unit contents, transfers, and automatic live inventory updates are not ported.
+
 On first desktop launch, legacy account metadata and preferences are imported
 into `settings.json` in Tauri's app configuration directory. Legacy files are
 left unchanged and encrypted credentials are not copied.
 
-Offline Steam module tests: `cargo test -p steam-core`. They do not contact Steam
-or require credentials. The production desktop login integration still needs a
-manual real-account check; enter credentials directly in the desktop app, not
-in test fixtures or logs.
+Offline module tests: `cargo test -p steam-core -p gc-cs2 -p item-schema`.
+They do not contact Steam or require credentials. The production desktop login
+and inventory integration still needs a manual real-account check; enter
+credentials directly in the desktop app, not in test fixtures or logs.

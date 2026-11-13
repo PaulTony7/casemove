@@ -35,7 +35,7 @@ Conventions:
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `refresh_inventory()` | `refreshInventory` | Legacy re-attaches GC inventory listeners; new core does this without listener churn | ☐ |
+| `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Live-account and incremental-event parity pending | ◐ |
 | `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Converts + trade-up enriches; error path returns `Err` instead of `[0]` | ☐ |
 | `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ☐ |
 | `storage_remove_item(casket_id, item_id, fast) -> MoveAck` | `removeFromStorageUnit` + `-reply` | Same pattern, `CasketRemoved` | ☐ |

@@ -1,4 +1,5 @@
 mod app;
+mod inventory;
 
 use app::*;
 use leptos::prelude::*;
