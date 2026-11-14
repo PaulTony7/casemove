@@ -1,6 +1,8 @@
-//! Price table (bundled legacy snapshot), source resolution, and USD
-//! formatting. Live provider lookups are a later checklist item — the legacy
-//! app's live URL was empty, so this snapshot *is* its behavior.
+//! Price table (bundled legacy snapshot), source resolution, live Steam
+//! Market quotes, and USD formatting.
+
+mod live;
+pub use live::{live_key, parse_priceoverview, LiveCache, PriceOverview, MAX_AGE_MS};
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -174,6 +176,23 @@ impl PriceTable {
     }
 }
 
+/// The display price for a row: the bundled snapshot quote for `source`,
+/// overridden by a live Steam Market quote when the source is steam_listing.
+pub fn resolve(
+    name: &str,
+    wear: Option<&str>,
+    source: PriceSource,
+    live: Option<f64>,
+) -> Option<f64> {
+    let mut quote = PriceTable::bundled().quote(name, wear);
+    if source == PriceSource::SteamListing
+        && let Some(price) = live
+    {
+        quote.steam_listing = Some(price);
+    }
+    quote.get(source)
+}
+
 /// Formats USD the way legacy's `Intl.NumberFormat` did for the en-US
 /// default: grouping separators, two decimals, `$` prefix.
 pub fn format_usd(amount: f64) -> String {
@@ -312,5 +331,54 @@ mod tests {
         assert_eq!(format_usd(1234.5), "$1,234.50");
         assert_eq!(format_usd(1234567.891), "$1,234,567.89");
         assert_eq!(format_usd(-42.5), "-$42.50");
+    }
+
+    #[test]
+    fn live_quotes_override_only_the_steam_source() {
+        let snapshot = table()
+            .price(
+                "AK-47 | Redline",
+                Some("Field-Tested"),
+                PriceSource::SteamListing,
+            )
+            .unwrap();
+        assert!(snapshot > 0.0);
+
+        // A live quote wins over the (older) snapshot value.
+        assert_eq!(
+            resolve(
+                "AK-47 | Redline",
+                Some("Field-Tested"),
+                PriceSource::SteamListing,
+                Some(snapshot + 5.0)
+            ),
+            Some(snapshot + 5.0)
+        );
+
+        // …but other sources still come from the snapshot.
+        assert_eq!(
+            resolve(
+                "AK-47 | Redline",
+                Some("Field-Tested"),
+                PriceSource::Skinport,
+                Some(99.0)
+            ),
+            table().price(
+                "AK-47 | Redline",
+                Some("Field-Tested"),
+                PriceSource::Skinport
+            )
+        );
+
+        // A live quote also covers items the snapshot is missing entirely…
+        assert_eq!(
+            resolve("No Such Item Ever", None, PriceSource::SteamListing, Some(3.5)),
+            Some(3.5)
+        );
+        // …and without one they price as zero, like the snapshot does.
+        assert_eq!(
+            resolve("No Such Item Ever", None, PriceSource::SteamListing, None),
+            Some(0.0)
+        );
     }
 }

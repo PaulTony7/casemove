@@ -365,6 +365,21 @@ fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         if app.view.sort != before {
             app.view.page = 0;
         }
+        let prices_text = if app.prices_busy {
+            "Updating prices…"
+        } else {
+            "Refresh prices"
+        };
+        let prices_button = egui::Button::new(
+            egui::RichText::new(format!(
+                "{}  {prices_text}",
+                egui_phosphor::regular::ARROWS_CLOCKWISE
+            ))
+            .size(12.0),
+        );
+        if ui.add_enabled(!app.prices_busy, prices_button).clicked() {
+            app.refresh_live_prices(true);
+        }
     });
     ui.add_space(14.0);
 }

@@ -4,10 +4,12 @@
 
 mod accounts;
 mod inventory;
+mod prices;
 mod session;
 
 pub use accounts::initialize_store;
 pub use inventory::InventoryState;
+pub use prices::fetch_live_prices;
 
 use app_commands::{SteamProfile, WalletInfo};
 use item_schema::ItemSchema;

@@ -69,6 +69,8 @@ pub struct CasemoveApp {
     pub storage_busy: bool,
     pub storage_error: String,
     pub storage_attempt: u64,
+    pub price_cache: pricing::LiveCache,
+    pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
 }
 
@@ -120,6 +122,8 @@ impl CasemoveApp {
             storage_busy: false,
             storage_error: String::new(),
             storage_attempt: 0,
+            price_cache: pricing::LiveCache::load(&prices_cache_path()),
+            prices_busy: false,
             view: inventory_view::InventoryViewState::default(),
         };
         app.initial_load();
@@ -226,6 +230,7 @@ impl CasemoveApp {
                                 .is_some_and(|profile| profile.steam_id == snapshot.steam_id)
                             {
                                 self.set_inventory(Some(snapshot));
+                                self.refresh_live_prices(false);
                             } else {
                                 self.inventory_error =
                                     "The Steam session changed. Load inventory again.".into();
@@ -250,10 +255,24 @@ impl CasemoveApp {
                         .is_some_and(|(selected, _)| *selected == casket)
                 {
                     match result {
-                        Ok(items) => self.storage_contents = Some(items),
+                        Ok(items) => {
+                            self.storage_contents = Some(items);
+                            self.refresh_live_prices(false);
+                        }
                         Err(error) => self.storage_error = error,
                     }
                     self.storage_busy = false;
+                }
+            }
+            Message::LivePrices(prices) => {
+                self.prices_busy = false;
+                if !prices.is_empty() {
+                    let now = now_ms();
+                    for (key, price) in prices {
+                        self.price_cache.insert(&key, price, now);
+                    }
+                    let _ = self.price_cache.save(&prices_cache_path());
+                    self.apply_live_prices();
                 }
             }
             Message::Image { url, result } => self.images.insert(ctx, url, result),
@@ -275,6 +294,60 @@ impl CasemoveApp {
         self.majors = majors;
         self.inventory = snapshot;
         self.view.page = 0;
+    }
+
+    /// Fetches live Steam Market quotes for every distinct moveable item
+    /// name (inventory plus open storage contents), skipping keys the cache
+    /// still holds fresh unless `force` — the Refresh prices button. With
+    /// nothing to fetch the cached quotes are re-applied straight away.
+    pub fn refresh_live_prices(&mut self, force: bool) {
+        if self.prices_busy || self.inventory.is_none() {
+            return;
+        }
+        let now = now_ms();
+        let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for item in self
+            .inventory
+            .iter()
+            .flat_map(|snapshot| &snapshot.items)
+            .chain(self.storage_contents.iter().flatten())
+        {
+            if item.moveable {
+                keys.insert(pricing::live_key(&item.name, item.wear_name.as_deref()));
+            }
+        }
+        let keys: Vec<String> = keys
+            .into_iter()
+            .filter(|key| force || !self.price_cache.fresh(key, now))
+            .collect();
+        if keys.is_empty() {
+            self.apply_live_prices();
+            return;
+        }
+        self.prices_busy = true;
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            reply.send(Message::LivePrices(
+                app_core::fetch_live_prices(keys).await,
+            ));
+        });
+    }
+
+    /// Re-resolves every visible price from the snapshot plus the live cache.
+    fn apply_live_prices(&mut self) {
+        if let Some(snapshot) = &mut self.inventory {
+            for item in &mut snapshot.items {
+                reprice(item, &self.price_cache);
+            }
+        }
+        for row in &mut self.grouped {
+            reprice(&mut row.representative, &self.price_cache);
+        }
+        if let Some(items) = &mut self.storage_contents {
+            for item in items {
+                reprice(item, &self.price_cache);
+            }
+        }
     }
 
     // --- actions ----------------------------------------------------------
@@ -953,4 +1026,30 @@ pub fn wallet_balance(wallet: Option<WalletInfo>) -> String {
         .filter(|info| info.has_wallet && info.balance > 0.0)
         .map(|info| format_balance(&info))
         .unwrap_or_default()
+}
+
+fn prices_cache_path() -> std::path::PathBuf {
+    app_core::config_dir().join("prices-live.json")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Re-resolves one row's price: the bundled snapshot overridden by any live
+/// quote in the cache.
+fn reprice(item: &mut InventoryItem, cache: &pricing::LiveCache) {
+    if !item.moveable {
+        return;
+    }
+    let key = pricing::live_key(&item.name, item.wear_name.as_deref());
+    item.price = pricing::resolve(
+        &item.name,
+        item.wear_name.as_deref(),
+        pricing::PriceSource::SteamListing,
+        cache.price(&key),
+    );
 }

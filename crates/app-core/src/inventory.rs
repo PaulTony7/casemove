@@ -194,13 +194,18 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     let equipped_t = item.equipped_classes.contains(&2);
     // Legacy prices only moveable rows (`handleItem`), from the bundled
     // snapshot with the default source (steam_listing) in USD — the
-    // source/currency settings are not ported yet.
-    let price = moveable.then(|| {
-        pricing::PriceTable::bundled()
-            .quote(&name, wear_name.as_deref())
-            .get(pricing::PriceSource::SteamListing)
-    });
-    let price = price.flatten();
+    // source/currency settings are not ported yet. Live quotes re-resolve
+    // the same rows later through `pricing::resolve`.
+    let price = moveable
+        .then(|| {
+            pricing::resolve(
+                &name,
+                wear_name.as_deref(),
+                pricing::PriceSource::SteamListing,
+                None,
+            )
+        })
+        .flatten();
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,

@@ -126,7 +126,7 @@ Rust working tree, including the pending storage-contents integration.
 ## Pricing, Overview, And Reports
 
 - [x] Price resolution from the bundled legacy snapshot (key quirks, steam window priority, zeros fallback, unpriced → "-").
-- [ ] Live Steam Market price lookup, cache, and refresh.
+- [x] Live Steam Market price lookup, cache, and refresh (auto after inventory/storage load plus a Refresh prices button; 24h disk-backed overlay in `prices-live.json`, steam_listing source, throttle stops the batch).
 - [ ] Currency conversion and locale-aware formatting.
 - [x] Per-item, grouped, inventory, and storage-unit valuations (combined price cell, inventory total, open-unit contents value).
 - [ ] Overview page with totals and breakdowns.

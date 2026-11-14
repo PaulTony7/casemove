@@ -24,6 +24,8 @@ pub enum Message {
         url: String,
         result: Result<egui::ColorImage, ()>,
     },
+    /// Fetched live Steam Market quotes as `(market_hash_name, price)` pairs.
+    LivePrices(Vec<(String, f64)>),
 }
 
 /// Clonable handle for sending a `Message` and waking the UI.
