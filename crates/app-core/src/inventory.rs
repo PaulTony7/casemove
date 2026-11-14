@@ -206,6 +206,16 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
             )
         })
         .flatten();
+    // Storage units advertise their contained-item count (attribute 270).
+    let storage_item_count = (item.definition_index == 1201)
+        .then(|| {
+            item.attributes
+                .iter()
+                .find(|attribute| attribute.definition_index == 270)
+                .and_then(|attribute| <[u8; 4]>::try_from(attribute.value.as_slice()).ok())
+                .map(u32::from_le_bytes)
+        })
+        .flatten();
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
@@ -220,6 +230,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         paint_seed,
         stat_trak,
         is_storage_unit: item.definition_index == 1201,
+        storage_item_count,
         category,
         major,
         trade_unlock,
@@ -382,6 +393,19 @@ impl Core {
             .await
             .map_err(|error| error.to_string())?
     }
+
+    /// Reads every storage unit's contents, one GC round-trip at a time
+    /// (the slot lock rejects overlapping requests, so they cannot race).
+    pub async fn all_storage_contents(
+        &self,
+        casket_ids: Vec<String>,
+    ) -> Result<Vec<InventoryItem>, String> {
+        let mut contents = Vec::new();
+        for casket_id in casket_ids {
+            contents.extend(self.storage_contents(casket_id).await?);
+        }
+        Ok(contents)
+    }
 }
 
 #[cfg(test)]
@@ -490,6 +514,27 @@ mod tests {
 
         storage.attributes[0].value = vec![4, 3, 2];
         assert!(storage_item_count(&[storage], 42).is_err());
+    }
+
+    #[test]
+    fn enriched_rows_carry_the_storage_unit_contents_count() {
+        let schema = ItemSchema::bundled().unwrap();
+
+        let mut storage = item();
+        storage.definition_index = 1201;
+        storage.attributes = vec![ItemAttribute {
+            definition_index: 270,
+            value: 7u32.to_le_bytes().to_vec(),
+        }];
+        assert_eq!(enrich_item(storage, &schema).storage_item_count, Some(7));
+
+        // Regular items never expose the count, even with a stray attribute.
+        let mut plain = item();
+        plain.attributes = vec![ItemAttribute {
+            definition_index: 270,
+            value: 7u32.to_le_bytes().to_vec(),
+        }];
+        assert_eq!(enrich_item(plain, &schema).storage_item_count, None);
     }
 
     #[test]

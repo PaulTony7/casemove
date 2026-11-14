@@ -83,6 +83,22 @@ impl Core {
             events,
         })
     }
+
+    /// Generic dot-path setting read (e.g. `overview.by`).
+    pub fn store_get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.store.lock().ok().and_then(|store| store.get(key))
+    }
+
+    /// Generic dot-path setting write, persisted like the legacy store.
+    pub fn store_set<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "The settings store is busy.".to_owned())?;
+        store
+            .set(key, value)
+            .map_err(|error| format!("Could not save the setting: {error}"))
+    }
 }
 
 fn home_dir() -> PathBuf {

@@ -1,6 +1,6 @@
 use crate::images::{self, ImageCache};
 use crate::messages::{Message, Reply};
-use crate::{icons, inventory_view, login, theme};
+use crate::{icons, inventory_view, login, overview_view, theme};
 use app_commands::{
     BrowserTokenLoginParams, InventoryItem, InventorySnapshot, PasswordLoginParams, SavedAccount,
     SteamProfile, WalletInfo,
@@ -58,6 +58,8 @@ pub struct CasemoveApp {
     pub removing: bool,
 
     pub inventory_open: bool,
+    pub overview_open: bool,
+    pub overview_by: overview_view::OverviewBy,
 
     pub inventory: Option<InventorySnapshot>,
     pub grouped: Vec<crate::inventory::GroupedItem>,
@@ -69,6 +71,11 @@ pub struct CasemoveApp {
     pub storage_busy: bool,
     pub storage_error: String,
     pub storage_attempt: u64,
+    /// Contents of every storage unit after "Load storage units" (legacy
+    /// `storageInventory`).
+    pub storage_aggregate: Option<Vec<InventoryItem>>,
+    pub storage_aggregate_busy: bool,
+    pub storage_aggregate_error: String,
     pub price_cache: pricing::LiveCache,
     pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
@@ -86,6 +93,10 @@ impl CasemoveApp {
         let reply = Reply::new(tx, cc.egui_ctx.clone());
         let images = ImageCache::new(rt.handle().clone(), reply.clone());
         let brand = icons::load_brand(&cc.egui_ctx);
+        let overview_by = core
+            .store_get::<String>("overview.by")
+            .and_then(|value| overview_view::OverviewBy::from_store(&value))
+            .unwrap_or_default();
         let mut app = Self {
             core,
             rt,
@@ -112,6 +123,8 @@ impl CasemoveApp {
             pending_removal: None,
             removing: false,
             inventory_open: false,
+            overview_open: false,
+            overview_by,
             inventory: None,
             grouped: Vec::new(),
             majors: Vec::new(),
@@ -122,6 +135,9 @@ impl CasemoveApp {
             storage_busy: false,
             storage_error: String::new(),
             storage_attempt: 0,
+            storage_aggregate: None,
+            storage_aggregate_busy: false,
+            storage_aggregate_error: String::new(),
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
             view: inventory_view::InventoryViewState::default(),
@@ -275,6 +291,20 @@ impl CasemoveApp {
                     self.apply_live_prices();
                 }
             }
+            Message::StorageAll(attempt, result) => {
+                self.storage_aggregate_busy = false;
+                if attempt == self.attempt {
+                    match result {
+                        Ok(items) => {
+                            self.storage_aggregate = Some(items);
+                            self.storage_aggregate_error.clear();
+                            self.apply_live_prices();
+                            self.refresh_live_prices(false);
+                        }
+                        Err(error) => self.storage_aggregate_error = error,
+                    }
+                }
+            }
             Message::Image { url, result } => self.images.insert(ctx, url, result),
         }
     }
@@ -293,6 +323,9 @@ impl CasemoveApp {
         majors.dedup();
         self.majors = majors;
         self.inventory = snapshot;
+        // Contents may have changed with the new snapshot; reload on demand.
+        self.storage_aggregate = None;
+        self.storage_aggregate_error.clear();
         self.view.page = 0;
     }
 
@@ -311,6 +344,7 @@ impl CasemoveApp {
             .iter()
             .flat_map(|snapshot| &snapshot.items)
             .chain(self.storage_contents.iter().flatten())
+            .chain(self.storage_aggregate.iter().flatten())
         {
             if item.moveable {
                 keys.insert(pricing::live_key(&item.name, item.wear_name.as_deref()));
@@ -348,6 +382,55 @@ impl CasemoveApp {
                 reprice(item, &self.price_cache);
             }
         }
+        if let Some(items) = &mut self.storage_aggregate {
+            for item in items {
+                reprice(item, &self.price_cache);
+            }
+        }
+    }
+
+    /// Fetches every storage unit's contents (legacy's overview Load button).
+    pub fn load_all_storage(&mut self) {
+        if self.storage_aggregate_busy || self.session_busy || self.inventory.is_none() {
+            return;
+        }
+        let ids: Vec<String> = self
+            .inventory
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| item.is_storage_unit)
+                    .map(|item| item.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            self.storage_aggregate = Some(Vec::new());
+            self.storage_aggregate_error.clear();
+            return;
+        }
+        self.storage_aggregate_busy = true;
+        self.storage_aggregate_error.clear();
+        let attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            reply.send(Message::StorageAll(
+                attempt,
+                core.all_storage_contents(ids).await,
+            ));
+        });
+    }
+
+    /// Persists the overview's price/volume grouping choice.
+    pub fn save_overview_by(&self) {
+        let core = self.core.clone();
+        let value = self.overview_by.as_str().to_owned();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("overview.by", value);
+        }));
     }
 
     // --- actions ----------------------------------------------------------
@@ -513,6 +596,7 @@ impl CasemoveApp {
         self.qr_error.clear();
         self.set_inventory(None);
         self.inventory_open = false;
+        self.overview_open = false;
         self.inventory_error.clear();
         self.inventory_busy = false;
         self.storage_selection = None;
@@ -632,7 +716,7 @@ impl eframe::App for CasemoveApp {
             )
             .show(ctx, |ui| self.sidebar(ui));
 
-        if !self.inventory_open {
+        if !self.inventory_open && !self.overview_open {
             egui::SidePanel::right("saved-accounts")
                 .resizable(false)
                 .exact_width(288.0)
@@ -652,7 +736,9 @@ impl eframe::App for CasemoveApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::BG))
             .show(ctx, |ui| {
-                if self.inventory_open && self.profile.is_some() {
+                if self.overview_open && self.profile.is_some() {
+                    overview_view::show(ui, self);
+                } else if self.inventory_open && self.profile.is_some() {
                     inventory_view::show(ui, self);
                 } else {
                     login::show(ui, self);
@@ -680,6 +766,7 @@ impl CasemoveApp {
             );
             if label.clicked() {
                 self.inventory_open = false;
+                self.overview_open = false;
             }
         });
         ui.add_space(30.0);
@@ -716,20 +803,29 @@ impl CasemoveApp {
         ];
         for (name, glyph) in nav {
             let is_inventory = name == "Inventory";
-            let enabled = is_inventory && self.profile.is_some() && !self.session_busy;
-            let current = is_inventory && self.inventory_open;
+            let is_overview = name == "Overview";
+            let is_page = is_inventory || is_overview;
+            let enabled = is_page && self.profile.is_some() && !self.session_busy;
+            let current = if is_overview {
+                self.overview_open
+            } else if is_inventory {
+                self.inventory_open && !self.overview_open
+            } else {
+                false
+            };
             let label = format!("{glyph}  {name}");
             let response = ui
                 .add_enabled_ui(enabled, |ui| ui.selectable_label(current, label))
                 .inner;
             if response.clicked() {
-                self.inventory_open = true;
+                self.overview_open = is_overview;
+                self.inventory_open = is_inventory;
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {
                     "Sign in to Steam first"
-                } else if is_inventory {
-                    "Inventory"
+                } else if is_page {
+                    "Waiting for the Steam session"
                 } else {
                     "This page has not been ported yet"
                 };

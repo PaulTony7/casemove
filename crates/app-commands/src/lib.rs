@@ -162,6 +162,9 @@ pub struct InventoryItem {
     pub paint_seed: Option<u32>,
     pub stat_trak: bool,
     pub is_storage_unit: bool,
+    /// Contained-item count for storage units (casket attribute 270).
+    #[serde(default)]
+    pub storage_item_count: Option<u32>,
     #[serde(default)]
     pub category: Option<String>,
     #[serde(default)]

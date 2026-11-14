@@ -236,27 +236,7 @@ fn main_section(
     toolbar(ui, app);
     filter_chips(ui, app);
 
-    let query = app.view.query.trim().to_lowercase();
-    let units_only = app.view.units_only;
-    let categories = app.view.selected_categories.clone();
-    let rarities = app.view.selected_rarities.clone();
-    let majors = app.view.selected_majors.clone();
-    let properties = app.view.selected_properties.clone();
-    let mut rows: Vec<&GroupedItem> = app
-        .grouped
-        .iter()
-        .filter(|row| {
-            inventory::matches_filters(
-                row,
-                &query,
-                units_only,
-                &categories,
-                &rarities,
-                &majors,
-                &properties,
-            )
-        })
-        .collect();
+    let mut rows = visible_rows(&app.grouped, &app.view);
     inventory::sort_rows(&mut rows, &app.view.sort);
 
     let inventory_value: f64 = rows
@@ -481,7 +461,30 @@ fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> bool {
         .inner
 }
 
-fn empty_state(ui: &mut egui::Ui, title: &str) {
+/// The rows the inventory table shows: the current filters applied to the
+/// grouped inventory. Shared with the overview charts.
+pub fn visible_rows<'a>(
+    grouped: &'a [GroupedItem],
+    view: &InventoryViewState,
+) -> Vec<&'a GroupedItem> {
+    let query = view.query.trim().to_lowercase();
+    grouped
+        .iter()
+        .filter(|row| {
+            inventory::matches_filters(
+                row,
+                &query,
+                view.units_only,
+                &view.selected_categories,
+                &view.selected_rarities,
+                &view.selected_majors,
+                &view.selected_properties,
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn empty_state(ui: &mut egui::Ui, title: &str) {
     ui.add_space(60.0);
     ui.vertical_centered(|ui| {
         ui.label(
@@ -495,7 +498,7 @@ fn empty_state(ui: &mut egui::Ui, title: &str) {
     ui.add_space(60.0);
 }
 
-fn error_box(ui: &mut egui::Ui, text: &str, note: Option<&str>) {
+pub(crate) fn error_box(ui: &mut egui::Ui, text: &str, note: Option<&str>) {
     let inner = egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {

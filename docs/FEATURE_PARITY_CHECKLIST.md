@@ -39,7 +39,8 @@ live in git history.
 
 - [ ] Search, filter, and sort storage contents.
 - [ ] Pagination or virtualization for storage contents.
-- [ ] Load all storage units and aggregate their contents.
+- [x] Load all storage units and aggregate their contents (overview "Load
+  storage units" button; sequential GC reads, cleared on inventory refresh).
 - [ ] Display storage counts, capacity, names, and values in a storage-management view.
 - [ ] Rename storage units.
 - [ ] Reconcile storage counts/cache after items move during loading.
@@ -71,8 +72,10 @@ live in git history.
 ## Pricing, Overview, And Reports
 
 - [ ] Currency conversion and locale-aware formatting.
-- [ ] Overview page with totals and breakdowns.
-- [ ] Overview charts and grouping controls.
+- [x] Overview page with totals and breakdowns (Total / Storage Units /
+  Inventory value cards with item counts; storage counts from attribute 270).
+- [x] Overview charts and grouping controls (Overall stacked bars and
+  category pie; Price/Volume grouping persisted as `overview.by`).
 - [ ] CSV export covering inventory/storage, prices, quantities, wear, and stickers.
 
 ## Trade-Ups And Containers

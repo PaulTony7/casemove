@@ -196,9 +196,19 @@ pub fn resolve(
 /// Formats USD the way legacy's `Intl.NumberFormat` did for the en-US
 /// default: grouping separators, two decimals, `$` prefix.
 pub fn format_usd(amount: f64) -> String {
+    format_usd_with(amount, 2)
+}
+
+/// Whole-dollar formatting — the legacy overview cards pass
+/// `maximumFractionDigits: 0`.
+pub fn format_usd_whole(amount: f64) -> String {
+    format_usd_with(amount, 0)
+}
+
+fn format_usd_with(amount: f64, decimals: usize) -> String {
     let negative = amount < 0.0;
-    let rounded = format!("{:.2}", amount.abs());
-    let (whole, decimals) = rounded.split_once('.').unwrap_or((&rounded, "00"));
+    let rounded = format!("{:.*}", decimals, amount.abs());
+    let (whole, fraction) = rounded.split_once('.').unwrap_or((&rounded, ""));
     let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
     for (index, digit) in whole.chars().enumerate() {
         if index > 0 && (whole.len() - index) % 3 == 0 {
@@ -206,7 +216,12 @@ pub fn format_usd(amount: f64) -> String {
         }
         grouped.push(digit);
     }
-    format!("{}${grouped}.{decimals}", if negative { "-" } else { "" })
+    let sign = if negative { "-" } else { "" };
+    if decimals == 0 {
+        format!("{sign}${grouped}")
+    } else {
+        format!("{sign}${grouped}.{fraction}")
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +346,14 @@ mod tests {
         assert_eq!(format_usd(1234.5), "$1,234.50");
         assert_eq!(format_usd(1234567.891), "$1,234,567.89");
         assert_eq!(format_usd(-42.5), "-$42.50");
+    }
+
+    #[test]
+    fn format_usd_whole_rounds_like_the_overview_cards() {
+        assert_eq!(format_usd_whole(123456.78), "$123,457");
+        assert_eq!(format_usd_whole(0.0), "$0");
+        assert_eq!(format_usd_whole(-42.6), "-$43");
+        assert_eq!(format_usd_whole(999.4), "$999");
     }
 
     #[test]

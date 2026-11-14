@@ -264,6 +264,7 @@ mod tests {
             paint_seed: None,
             stat_trak: false,
             is_storage_unit: false,
+            storage_item_count: None,
             category: None,
             major: None,
             trade_unlock: None,

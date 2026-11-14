@@ -5,6 +5,7 @@ mod inventory;
 mod inventory_view;
 mod login;
 mod messages;
+mod overview_view;
 mod theme;
 
 use app_core::{AppEvent, Core, EventSink};
