@@ -128,7 +128,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Price resolution from the bundled legacy snapshot (key quirks, steam window priority, zeros fallback, unpriced → "-").
 - [ ] Live Steam Market price lookup, cache, and refresh.
 - [ ] Currency conversion and locale-aware formatting.
-- [ ] Per-item, grouped, inventory, and storage-unit valuations.
+- [x] Per-item, grouped, inventory, and storage-unit valuations (combined price cell, inventory total, open-unit contents value).
 - [ ] Overview page with totals and breakdowns.
 - [ ] Overview charts and grouping controls.
 - [ ] CSV export covering inventory/storage, prices, quantities, wear, and stickers.

@@ -169,6 +169,23 @@ fn storage_section(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     if let Some(items) = &app.storage_contents
         && !items.is_empty()
     {
+        // Legacy storage totals: combined_QTY x price over the contents
+        // (grouping does not change the sum; unpriced rows count as zero).
+        let contents_value: f64 = items
+            .iter()
+            .map(|item| item.price.unwrap_or(0.0) * item.quantity as f64)
+            .sum();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Contents value: {}",
+                    pricing::format_usd(contents_value)
+                ))
+                .size(13.0)
+                .strong(),
+            );
+        });
+        ui.add_space(6.0);
         table(
             ui,
             &mut app.images,
@@ -593,13 +610,30 @@ fn table(
                 row.col(|ui| {
                     ui.label(egui::RichText::new(display_qty.to_string()).size(12.0));
                 });
-                row.col(|ui| {
-                    ui.label(match item.price {
-                        Some(price) => {
-                            egui::RichText::new(pricing::format_usd(price)).size(12.0)
-                        }
-                        None => egui::RichText::new("-").size(11.0).color(theme::MUTED),
-                    });
+                row.col(|ui| match item.price {
+                    Some(price) => {
+                        // Legacy `priceRow`: combined price (price x qty) on
+                        // top, the per-unit price beneath it — shown only
+                        // for stacks with a non-zero price.
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(pricing::format_usd(
+                                    price * display_qty as f64,
+                                ))
+                                .size(12.0),
+                            );
+                            if display_qty > 1 && price != 0.0 {
+                                ui.label(
+                                    egui::RichText::new(pricing::format_usd(price))
+                                        .size(10.0)
+                                        .color(theme::MUTED),
+                                );
+                            }
+                        });
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("-").size(11.0).color(theme::MUTED));
+                    }
                 });
                 row.col(|ui| {
                     ui.label(
