@@ -220,14 +220,21 @@ fn list_accounts(store: &SettingsStore) -> Vec<SavedAccount> {
 }
 
 pub(crate) fn is_steam_avatar_url(url: &str) -> bool {
-    [
-        "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/",
-        "https://avatars.steamstatic.com/",
-        "https://avatars.fastly.steamstatic.com/",
-        "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/avatars/",
-    ]
-    .iter()
-    .any(|prefix| url.starts_with(prefix))
+    // Legacy path-scoped CDN.
+    if url.starts_with("https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/") {
+        return true;
+    }
+    // Steam serves avatars from several edge CDNs that all live under
+    // steamstatic.com (avatars., avatars.fastly., avatars.akamai., cdn.akamai. …),
+    // so allow by host suffix instead of enumerating edges.
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let Some(slash) = rest.find('/') else {
+        return false;
+    };
+    let host = &rest[..slash];
+    host == "steamstatic.com" || host.ends_with(".steamstatic.com")
 }
 
 fn set_account_position(
@@ -771,5 +778,28 @@ mod tests {
             .unwrap();
         assert_eq!(alice.display_name, "Alice Synth");
         assert!(alice.has_saved_login);
+    }
+
+    #[test]
+    fn avatar_allowlist_covers_every_steam_edge_but_no_other_hosts() {
+        for url in [
+            "https://avatars.steamstatic.com/x_medium.jpg",
+            "https://avatars.fastly.steamstatic.com/x_medium.jpg",
+            "https://avatars.akamai.steamstatic.com/x_full.jpg",
+            "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/avatars/x.jpg",
+            "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/x.jpg",
+            "https://steamstatic.com/x.jpg",
+        ] {
+            assert!(is_steam_avatar_url(url), "expected allow: {url}");
+        }
+        for url in [
+            "https://avatars.akamai.steamstatic.com.evil.example/x.jpg",
+            "https://notsteamstatic.com/x.jpg",
+            "https://evil.example/steamstatic.com/x.jpg",
+            "http://avatars.steamstatic.com/x.jpg",
+            "https://evil.example/x.jpg",
+        ] {
+            assert!(!is_steam_avatar_url(url), "expected reject: {url}");
+        }
     }
 }

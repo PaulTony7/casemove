@@ -84,8 +84,19 @@ fn extract_avatar_url(html: &str) -> Option<String> {
 }
 
 async fn http_text(url: &str) -> Option<String> {
-    let response = reqwest::get(url).await.ok()?.error_for_status().ok()?;
-    response.text().await.ok()
+    // One retry: steamcommunity edges intermittently drop rapid requests.
+    for attempt in 0..2 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        if let Ok(response) = reqwest::get(url).await
+            && let Ok(response) = response.error_for_status()
+            && let Ok(text) = response.text().await
+        {
+            return Some(text);
+        }
+    }
+    None
 }
 
 async fn fetch_steam_identity(steam_id: &str) -> Option<(Option<String>, Option<String>)> {
@@ -547,5 +558,32 @@ mod tests {
                 currency: "EUR".into(),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "network: live steamcommunity fetch"]
+    async fn fetches_live_identity_for_the_reference_profile() {
+        let html_url = "https://steamcommunity.com/profiles/76561198048391869/";
+        match reqwest::get(html_url).await {
+            Ok(response) => {
+                println!("html status: {}", response.status());
+                match response.text().await {
+                    Ok(text) => println!("html text: {} bytes", text.len()),
+                    Err(error) => println!("html text error: {error:?}"),
+                }
+            }
+            Err(error) => println!("html get error: {error:?}"),
+        }
+
+        let identity = fetch_steam_identity("76561198048391869").await;
+        println!("fetch_steam_identity: {identity:?}");
+        let (display, avatar) = identity.expect("identity fetch should succeed");
+        assert!(display.is_some(), "expected a display name");
+        assert!(avatar.is_some(), "expected an avatar URL");
     }
 }
