@@ -8,6 +8,8 @@ pub enum Message {
         accounts: Result<Vec<SavedAccount>, String>,
         session: Result<Option<SteamProfile>, String>,
     },
+    SchemaRefresh(Result<app_core::SchemaRefreshReport, String>),
+    InventoryMetadata(u64, Result<Option<InventorySnapshot>, String>),
     Accounts(Result<Vec<SavedAccount>, String>),
     Deleted(Result<Vec<SavedAccount>, String>),
     Moved(Result<Vec<SavedAccount>, String>),

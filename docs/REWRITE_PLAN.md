@@ -64,8 +64,14 @@ performance, and first-class support for Steam + third-party market APIs.
   bundled legacy schema; unknown items remain visible. Exact hashed thumbnails
   are used where the bundled catalog has one; other items show a fallback icon.
   Asset IDs remain strings across IPC. Reward-preview objects are excluded as
-  in the legacy converter. Wear/seed, nametags, rarity, and StatTrak
-  presence are shown; full sticker/music/graffiti enrichment is not yet ported.
+  in the legacy converter. Wear/seed, nametags, rarity, StatTrak, applied
+  sticker/patch metadata, collection/trade-up data, music kits, and graffiti
+  tint are enriched. Inventory columns can be configured and persisted.
+  Incremental SO create/update/remove messages update the displayed snapshot
+  automatically. The bundled schema is available immediately, with live
+  Skinledger VDF refresh and Steam-hosted image catalogs cached for up to 24
+  hours. Live-account image rendering and offline-fallback behavior remain
+  unverified.
 - Read-only storage-unit contents now use the retained GC client. The native
   command validates the storage ID against the loaded session inventory, reads
   the expected count from attribute 270, and returns contents only after the GC
@@ -78,11 +84,11 @@ performance, and first-class support for Steam + third-party market APIs.
   integration. The decoder reads `objects_added` and `objects_removed` from
   unknown SO fields 4 and 5 because the bundled proto omits them; these field
   numbers and stream behavior still require verification against CS2 GC traffic.
-  Transfers, incremental inventory/connection events, and other authenticated
-  pages remain unimplemented. The native titlebar is retained; cross-platform
+  Transfers, Steam/GC connection-loss events, and other authenticated pages
+  remain unimplemented. The native titlebar is retained; cross-platform
   packaging is not yet verified.
 - Next vertical slice: verify a non-empty storage unit and a move during loading
-  against a real account, then add incremental inventory/connection events. The
+  against a real account, then implement Steam/GC connection events. The
   Phase 0 report in `docs/metrics/spike-b.md` records the earlier real-account
   spike; do not treat that as end-to-end verification of this production UI.
   Keep legacy code until its matching workflow and characterization tests pass.

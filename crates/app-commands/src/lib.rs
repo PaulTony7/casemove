@@ -154,6 +154,8 @@ pub struct InventoryItem {
     pub name: String,
     pub custom_name: Option<String>,
     pub image_url: Option<String>,
+    #[serde(default)]
+    pub image_path: Option<String>,
     pub quantity: u32,
     pub rarity: u32,
     pub position: u32,
@@ -183,6 +185,32 @@ pub struct InventoryItem {
     /// moveable rows); `None` when the source has no value.
     #[serde(default)]
     pub price: Option<f64>,
+    #[serde(default)]
+    pub collection: Option<String>,
+    #[serde(default)]
+    pub trade_up_eligible: bool,
+    #[serde(default)]
+    pub stickers: Vec<InventorySticker>,
+    #[serde(default)]
+    pub music_kit: Option<String>,
+    #[serde(default)]
+    pub graffiti: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventorySticker {
+    pub slot: u32,
+    pub name: String,
+    pub kind: String,
+    pub image_path: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    pub wear: Option<f64>,
+    pub scale: Option<f64>,
+    pub rotation: Option<f64>,
+    pub offset_x: Option<f64>,
+    pub offset_y: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -190,6 +218,14 @@ pub struct InventoryItem {
 pub struct InventorySnapshot {
     pub steam_id: String,
     pub items: Vec<InventoryItem>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InventoryChangeReason {
+    ItemAcquired,
+    ItemChanged,
+    ItemRemoved,
 }
 
 #[cfg(test)]

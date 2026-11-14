@@ -26,21 +26,29 @@ live in git history.
 
 ## Inventory And Item Data
 
-- [ ] Incremental SO-cache create/update/remove handling and automatic UI updates.
-- [ ] Sticker/patch property filter (lands with sticker metadata below).
-- [ ] Collection, sticker, and storage-name sorts.
-- [ ] Sticker/patch metadata, images, and applied-item details.
-- [ ] Music-kit, graffiti/tint, agent, and other specialized-item enrichment.
-- [ ] Collection metadata and trade-up eligibility.
-- [ ] Complete image coverage and live schema refresh with bundled fallback.
-- [ ] Configurable inventory columns.
+- [ ] Verify live item/sticker image coverage and cached/bundled fallback.
+- [ ] Complete agent-specific and remaining specialized-item enrichment.
+
+The app loads the bundled schema immediately, uses a cached live schema when
+available, and refreshes it at most once per 24 hours. Live VDF schema and
+translation data come from Skinledger; Steam-hosted image catalogs for skins,
+stickers, agents, collectibles, graffiti, music kits, crates, and keys come from
+the public CSGO-API dataset. Failed refreshes keep the last cached or bundled
+schema. Live-account image rendering and offline-fallback behavior still need
+verification; agent-specific enrichment remains incomplete.
+Graffiti thumbnails are indexed by kit and tint, standalone stickers use their
+sticker-kit images, and case images use inventory definition IDs. Offline
+conversion tests and opt-in live catalog/download tests cover these paths;
+live-account rendering is still unverified.
+
+**Recommended next feature:** Build a storage-management view for unit names,
+counts, capacity, and values. It builds on loaded storage contents and provides
+a foundation for the transfer workflows.
 
 ## Storage Units
 
 - [ ] Search, filter, and sort storage contents.
 - [ ] Pagination or virtualization for storage contents.
-- [x] Load all storage units and aggregate their contents (overview "Load
-  storage units" button; sequential GC reads, cleared on inventory refresh).
 - [ ] Display storage counts, capacity, names, and values in a storage-management view.
 - [ ] Rename storage units.
 - [ ] Reconcile storage counts/cache after items move during loading.
@@ -72,10 +80,6 @@ live in git history.
 ## Pricing, Overview, And Reports
 
 - [ ] Currency conversion and locale-aware formatting.
-- [x] Overview page with totals and breakdowns (Total / Storage Units /
-  Inventory value cards with item counts; storage counts from attribute 270).
-- [x] Overview charts and grouping controls (Overall stacked bars and
-  category pie; Price/Volume grouping persisted as `overview.by`).
 - [ ] CSV export covering inventory/storage, prices, quantities, wear, and stickers.
 
 ## Trade-Ups And Containers
@@ -93,6 +97,7 @@ live in git history.
 - [ ] Verify shared-secret login, email-only challenges, clock skew, and code rollover against a real account.
 - [ ] Compare real-account inventory IDs/counts and visible metadata against legacy.
 - [ ] Verify empty and non-empty storage units through native IPC and the live GC.
+- [ ] Verify live schema refresh, cached/bundled fallback, and item/sticker image rendering.
 - [ ] Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - [ ] Verify moves/removals during storage loading and notification ordering.
 - [ ] Golden characterization fixtures for conversion, grouping, filters, sorts, and trade-ups.

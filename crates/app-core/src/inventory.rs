@@ -1,6 +1,6 @@
 use crate::Core;
-use app_commands::{InventoryItem, InventorySnapshot};
-use gc_cs2::{EconItem, InventoryClient, InventoryError};
+use app_commands::{InventoryChangeReason, InventoryItem, InventorySnapshot, InventorySticker};
+use gc_cs2::{EconItem, InventoryChange, InventoryClient, InventoryError};
 use item_schema::ItemSchema;
 
 #[derive(Default)]
@@ -78,6 +78,42 @@ fn attribute_integer(item: &EconItem, index: u32) -> Option<u32> {
     (value >= 0.0 && value < u32::MAX as f32 && value.fract() == 0.0).then_some(value as u32)
 }
 
+fn attribute_raw_integer(item: &EconItem, index: u32) -> Option<u32> {
+    item.attributes
+        .iter()
+        .find(|attribute| attribute.definition_index == index)
+        .and_then(|attribute| <[u8; 4]>::try_from(attribute.value.as_slice()).ok())
+        .map(u32::from_le_bytes)
+}
+
+fn attribute_value(item: &EconItem, index: u32) -> Option<f64> {
+    attribute_float(item, index).map(f64::from)
+}
+
+fn enrich_stickers(item: &EconItem, schema: &ItemSchema) -> Vec<InventorySticker> {
+    (0..=5)
+        .filter_map(|index| {
+            let sticker_id = attribute_raw_integer(item, 113 + index * 4)?;
+            if sticker_id == 0 {
+                return None;
+            }
+            let details = schema.sticker(sticker_id)?;
+            Some(InventorySticker {
+                slot: attribute_raw_integer(item, 290 + index).unwrap_or(index),
+                name: details.name,
+                kind: details.kind,
+                image_path: details.image_path,
+                image_url: details.image_url,
+                wear: attribute_value(item, 114 + index * 4),
+                scale: attribute_value(item, 115 + index * 4),
+                rotation: attribute_value(item, 116 + index * 4),
+                offset_x: attribute_value(item, 278 + index * 2),
+                offset_y: attribute_value(item, 279 + index * 2),
+            })
+        })
+        .collect()
+}
+
 /// Legacy converter drops items stored inside storage units and two
 /// placeholder IDs, in every conversion path.
 const EXCLUDED_ITEM_IDS: [u64; 2] = [17293822569110896676, 17293822569102708641];
@@ -126,7 +162,11 @@ fn compute_moveable(schema: &ItemSchema, item: &EconItem, item_url: &str, name: 
         || item_url.contains("plusstars")
         || (schema
             .item_attribute(item.definition_index, "cannot trade")
-            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_str()?.parse::<u64>().ok())
+            })
             == Some(1))
         || (item_url.contains("crate_key") && item.flags == Some(10))
         || item_url.contains("weapons/base_weapons");
@@ -145,20 +185,64 @@ fn compute_moveable(schema: &ItemSchema, item: &EconItem, item_url: &str, name: 
 }
 
 fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
-    let paint = attribute_integer(&item, 6);
+    let paint = attribute_integer(&item, 6).filter(|paint| *paint != 0);
     let wear = attribute_float(&item, 8)
         .map(f64::from)
         .filter(|wear| (0.0..=1.0).contains(wear));
     let paint_seed = attribute_integer(&item, 7);
-    let description = schema.describe(item.definition_index, paint);
+    let stickers = enrich_stickers(&item, schema);
+    let mut description = schema.describe(item.definition_index, paint);
+    let base_name = description.name.clone();
+    let collection_metadata = schema.collection(&base_name);
+    let collection = collection_metadata.map(|metadata| metadata.name.clone());
+    if let Some(music) = item.music_index.and_then(|index| schema.music_kit(index)) {
+        description.name = music.name.clone();
+        description.image_path = music.image_path;
+        if music.image_url.is_some() {
+            description.image_url = music.image_url;
+        }
+    } else if matches!(item.definition_index, 1209 | 1348 | 1349 | 4609)
+        && let Some(sticker) = stickers.iter().find(|sticker| sticker.slot == 0)
+    {
+        description.name = format!("{base_name} | {}", sticker.name);
+        if description.image_path.is_none() {
+            description.image_path = sticker.image_path.clone();
+        }
+        if description.image_url.is_none() {
+            description.image_url = sticker.image_url.clone();
+        }
+    }
+    let graffiti_tint = attribute_raw_integer(&item, 233);
+    if matches!(item.definition_index, 1209 | 1348 | 1349 | 4609)
+        && let Some(kit_id) = attribute_raw_integer(&item, 113)
+    {
+        description.image_url = if matches!(item.definition_index, 1348 | 1349) {
+            schema.graffiti_image(kit_id, graffiti_tint)
+        } else {
+            schema.sticker(kit_id).and_then(|sticker| sticker.image_url)
+        };
+    }
+    let graffiti = graffiti_tint.and_then(|id| schema.graffiti_name(id));
+    if let Some(graffiti_name) = &graffiti {
+        description.name.push_str(&format!(" ({graffiti_name})"));
+    }
+    if description.image_url.is_none() {
+        description.image_url = schema
+            .collection(&base_name)
+            .and_then(|metadata| metadata.image_url.clone());
+    }
     let stat_trak = item
         .attributes
         .iter()
         .any(|attribute| attribute.definition_index == 80);
+    let is_souvenir = item
+        .attributes
+        .iter()
+        .any(|attribute| attribute.definition_index == 140);
     // Legacy naming order: Souvenir inside the name processor, then the
     // StatTrak prefix, then the star for unusual-quality (knife) items.
     let mut name = description.name;
-    if item.definition_index == 140 && !name.contains("Souvenir") {
+    if is_souvenir && !name.contains("Souvenir") {
         name = format!("Souvenir {name}");
     }
     if stat_trak {
@@ -169,26 +253,28 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     }
     let position = item.legacy_position();
     let wear_name = wear.map(|wear| wear_name(wear).to_owned());
-    // Category from the econ path (legacy matched `item_url`), major from the
-    // final display name exactly like legacy's post-prefix `getCategory`.
-    let category = description
+    if item.definition_index == 1201
+        && let Some(icon_id) = attribute_raw_integer(&item, 70)
+        && let Some(icon) = schema.casket_icon(icon_id)
+    {
+        description.image_path = Some(icon);
+    }
+    let item_url = description
         .image_path
         .as_deref()
         .or(description.image_url.as_deref())
-        .and_then(domain::classify_category)
-        .map(str::to_owned);
+        .unwrap_or_default()
+        .to_owned();
+    // Category from the econ path (legacy matched `item_url`), major from the
+    // final display name exactly like legacy's post-prefix `getCategory`.
+    let category = domain::classify_category(&item_url).map(str::to_owned);
     let major = domain::classify_major(&name).map(str::to_owned);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
     let trade_unlock = trade_unlock_ms(&name, item.tradeable_after_secs, now_ms);
-    let item_url = description
-        .image_path
-        .as_deref()
-        .or(description.image_url.as_deref())
-        .unwrap_or_default();
-    let moveable = compute_moveable(schema, &item, item_url, &name);
+    let moveable = compute_moveable(schema, &item, &item_url, &name);
     // Legacy `itemProcessorisEquipped`: new_class 2 → T, 3 → CT.
     let equipped_ct = item.equipped_classes.contains(&3);
     let equipped_t = item.equipped_classes.contains(&2);
@@ -216,12 +302,20 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
                 .map(u32::from_le_bytes)
         })
         .flatten();
+    let trade_up_eligible = collection_metadata
+        .and_then(|metadata| metadata.trade_up)
+        .unwrap_or(true)
+        && item.rarity < 6
+        && item.quality != 3
+        && !name.contains("Souvenir")
+        && item_url.contains("econ/default_generated");
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
         name,
         custom_name: item.custom_name,
         image_url: description.image_url,
+        image_path: description.image_path,
         quantity: item.quantity,
         rarity: item.rarity,
         position,
@@ -238,6 +332,14 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         equipped_ct,
         equipped_t,
         price,
+        collection,
+        trade_up_eligible,
+        stickers,
+        music_kit: item
+            .music_index
+            .and_then(|index| schema.music_kit(index))
+            .map(|kit| kit.name),
+        graffiti,
     }
 }
 
@@ -262,6 +364,81 @@ fn to_rows(
         }
     }
     Ok(rows)
+}
+
+fn apply_inventory_change(
+    items: &mut Vec<EconItem>,
+    change: InventoryChange,
+) -> Option<(InventoryChangeReason, EconItem)> {
+    match change {
+        InventoryChange::Upsert(item) => {
+            let existing = items.iter().position(|old| old.id == item.id);
+            let reason = if let Some(index) = existing {
+                items[index] = item.clone();
+                InventoryChangeReason::ItemChanged
+            } else {
+                items.push(item.clone());
+                InventoryChangeReason::ItemAcquired
+            };
+            items.sort_by_key(|item| (item.legacy_position(), item.id));
+            Some((reason, item))
+        }
+        InventoryChange::Remove(id) => {
+            let index = items.iter().position(|item| item.id == id)?;
+            Some((InventoryChangeReason::ItemRemoved, items.remove(index)))
+        }
+    }
+}
+
+fn listen_inventory_changes(
+    inventory: std::sync::Arc<InventoryState>,
+    generation: u64,
+    steam_id: String,
+    schema: std::sync::Arc<std::sync::RwLock<std::sync::Arc<ItemSchema>>>,
+    events: crate::EventSink,
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<Result<InventoryChange, InventoryError>>,
+) {
+    tokio::spawn(async move {
+        while let Some(change) = changes.recv().await {
+            let change = match change {
+                Ok(change) => change,
+                Err(error) => {
+                    events.emit(crate::AppEvent::InventoryError(error.to_string()));
+                    return;
+                }
+            };
+            let mut state = inventory.0.lock().await;
+            let Some(slot) = state.as_mut().filter(|slot| slot.generation == generation) else {
+                return;
+            };
+            let Some((reason, changed)) = apply_inventory_change(&mut slot.items, change) else {
+                continue;
+            };
+            let item_id = changed.id.to_string();
+            let schema = match schema.read() {
+                Ok(schema) => schema.clone(),
+                Err(_) => {
+                    events.emit(crate::AppEvent::InventoryError(
+                        "The item schema is unavailable.".into(),
+                    ));
+                    return;
+                }
+            };
+            let item = match to_rows(vec![changed], &schema, false) {
+                Ok(mut rows) => rows.pop(),
+                Err(error) => {
+                    events.emit(crate::AppEvent::InventoryError(error));
+                    return;
+                }
+            };
+            events.emit(crate::AppEvent::InventoryChanged {
+                steam_id: steam_id.clone(),
+                reason,
+                item_id,
+                item: item.map(Box::new),
+            });
+        }
+    });
 }
 
 fn parse_storage_id(value: &str) -> Result<u64, String> {
@@ -305,7 +482,9 @@ impl Core {
     pub async fn refresh_inventory(&self) -> Result<InventorySnapshot, String> {
         let session = &*self.session;
         let inventory = &*self.inventory;
-        let schema = &*self.schema;
+        let inventory_state = self.inventory.clone();
+        let schema_state = self.schema.clone();
+        let events = self.events.clone();
         session
             .with_connection(|connection, generation| async move {
                 let mut state = inventory
@@ -323,9 +502,10 @@ impl Core {
                     } else {
                         return Err("The Steam connection is unavailable.".into());
                     };
-                    let (client, items) = connected.map_err(|error| {
+                    let (mut client, items) = connected.map_err(|error| {
                         format!("{error} Sign out of Steam and sign back in before reconnecting.")
                     })?;
+                    let changes = client.take_changes();
                     session
                         .in_generation(generation, || {
                             *state = Some(GcSlot {
@@ -335,6 +515,16 @@ impl Core {
                             });
                         })
                         .map_err(|error| error.to_string())?;
+                    if let Some(changes) = changes {
+                        listen_inventory_changes(
+                            inventory_state.clone(),
+                            generation,
+                            connection.steam_id(),
+                            schema_state.clone(),
+                            events.clone(),
+                            changes,
+                        );
+                    }
                     items
                 } else {
                     let client = state.as_ref().and_then(|slot| slot.client.as_ref()).ok_or_else(|| {
@@ -355,7 +545,8 @@ impl Core {
                         })?;
                     items
                 };
-                let rows = to_rows(items, schema, false)?;
+                let schema = self.schema_snapshot()?;
+                let rows = to_rows(items, &schema, false)?;
                 Ok(InventorySnapshot {
                     steam_id: connection.steam_id(),
                     items: rows,
@@ -365,11 +556,30 @@ impl Core {
             .map_err(|error| error.to_string())?
     }
 
+    pub async fn refresh_inventory_metadata(&self) -> Result<Option<InventorySnapshot>, String> {
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = self.schema_snapshot()?;
+        session
+            .with_connection(|connection, generation| async move {
+                let state = inventory.0.lock().await;
+                let Some(slot) = state.as_ref().filter(|slot| slot.generation == generation) else {
+                    return Ok(None);
+                };
+                let items = to_rows(slot.items.clone(), &schema, false)?;
+                Ok(Some(InventorySnapshot {
+                    steam_id: connection.steam_id(),
+                    items,
+                }))
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
     pub async fn storage_contents(&self, casket_id: String) -> Result<Vec<InventoryItem>, String> {
         let casket_id = parse_storage_id(&casket_id)?;
         let session = &*self.session;
         let inventory = &*self.inventory;
-        let schema = &*self.schema;
         session
             .with_connection(|_connection, generation| async move {
                 let state = inventory.0.try_lock().map_err(|_| {
@@ -388,7 +598,8 @@ impl Core {
                     .storage_contents(casket_id, expected_count)
                     .await
                     .map_err(storage_contents_error)?;
-                to_rows(items, schema, true)
+                let schema = self.schema_snapshot()?;
+                to_rows(items, &schema, true)
             })
             .await
             .map_err(|error| error.to_string())?
@@ -442,6 +653,228 @@ mod tests {
         assert_eq!(converted.custom_name.as_deref(), Some("Nametag"));
         let json = serde_json::to_value(converted).unwrap();
         assert_eq!(json["id"], (u64::MAX - 1).to_string());
+    }
+
+    #[test]
+    fn incremental_changes_replace_add_remove_and_keep_position_order() {
+        let mut items = vec![item()];
+        let mut changed = item();
+        changed.quantity = 5;
+        assert_eq!(
+            apply_inventory_change(&mut items, InventoryChange::Upsert(changed.clone())),
+            Some((InventoryChangeReason::ItemChanged, changed))
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].quantity, 5);
+
+        let mut acquired = item();
+        acquired.id = 42;
+        acquired.inventory_position = Some(0);
+        assert_eq!(
+            apply_inventory_change(&mut items, InventoryChange::Upsert(acquired.clone())),
+            Some((InventoryChangeReason::ItemAcquired, acquired))
+        );
+        assert_eq!(
+            items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![42, u64::MAX - 1]
+        );
+
+        let expected_removed = items[0].clone();
+        assert_eq!(
+            apply_inventory_change(&mut items, InventoryChange::Remove(42)),
+            Some((InventoryChangeReason::ItemRemoved, expected_removed))
+        );
+        assert!(apply_inventory_change(&mut items, InventoryChange::Remove(42)).is_none());
+    }
+
+    #[test]
+    fn enriches_applied_stickers_collection_and_trade_up_metadata() {
+        let schema = ItemSchema::from_json_with_collections(
+            r##"{
+                "items":{"7":{"name":"weapon_ak47","item_name":"#AK"}},
+                "paint_kits":{"44":{"name":"redline","description_tag":"#REDLINE"}},
+                "sticker_kits":{"12":{"item_name":"#PATCH","patch_material":"test_patch"}}
+            }"##,
+            r##"{"ak":"\"AK-47\"","redline":"\"Redline\"","patch":"\"Test Patch\""}"##,
+            r##"{
+                "The Test Collection":{
+                    "AK-47 | Redline":{
+                        "trade_up":true,
+                        "imageURL":"http://media.steampowered.com/apps/730/test.png"
+                    }
+                }
+            }"##,
+        )
+        .unwrap();
+        let mut source = item();
+        source.attributes.extend([
+            ItemAttribute {
+                definition_index: 6,
+                value: 44.0f32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 113,
+                value: 12u32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 114,
+                value: 0.25f32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 115,
+                value: 1.0f32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 116,
+                value: 0.0f32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 278,
+                value: 0.1f32.to_le_bytes().to_vec(),
+            },
+            ItemAttribute {
+                definition_index: 279,
+                value: (-0.1f32).to_le_bytes().to_vec(),
+            },
+        ]);
+        let row = enrich_item(source, &schema);
+        assert_eq!(row.name, "AK-47 | Redline");
+        assert_eq!(row.collection.as_deref(), Some("The Test Collection"));
+        assert!(row.trade_up_eligible);
+        assert_eq!(
+            row.image_url.as_deref(),
+            Some("https://media.steampowered.com/apps/730/test.png")
+        );
+        assert_eq!(row.stickers.len(), 1);
+        assert_eq!(row.stickers[0].slot, 0);
+        assert_eq!(row.stickers[0].name, "Test Patch");
+        assert_eq!(row.stickers[0].kind, "Patch");
+        assert_eq!(row.stickers[0].wear, Some(0.25));
+        assert!((row.stickers[0].offset_x.unwrap() - 0.1).abs() < 1e-6);
+        assert!((row.stickers[0].offset_y.unwrap() + 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn music_kits_graffiti_and_casket_icons_are_enriched() {
+        let schema = ItemSchema::from_json_with_collections(
+            r##"{
+                "items":{"7":{"name":"weapon_ak47","item_name":"#AK"}},
+                "music_kits":{"4":{"loc_name":"#MUSIC","image_inventory":"econ/music/test"}},
+                "graffiti_tints":{"bright_blue":{"id":9}},
+                "casket_icons":{"3":{"icon_path":"econ/tools/casket_test"}}
+            }"##,
+            r##"{"ak":"\"AK-47\"","music":"\"Test Music\""}"##,
+            "{}",
+        )
+        .unwrap();
+        let mut music = item();
+        music.music_index = Some(4);
+        music.attributes.push(ItemAttribute {
+            definition_index: 233,
+            value: 9u32.to_le_bytes().to_vec(),
+        });
+        let row = enrich_item(music, &schema);
+        assert_eq!(row.name, "Music Kit | Test Music (Bright Blue)");
+        assert_eq!(row.music_kit.as_deref(), Some("Music Kit | Test Music"));
+        assert_eq!(row.graffiti.as_deref(), Some("Bright Blue"));
+        assert!(!row.trade_up_eligible);
+
+        let mut casket = item();
+        casket.definition_index = 1201;
+        casket.attributes.push(ItemAttribute {
+            definition_index: 70,
+            value: 3u32.to_le_bytes().to_vec(),
+        });
+        assert_eq!(
+            enrich_item(casket, &schema).image_path.as_deref(),
+            Some("econ/tools/casket_test")
+        );
+    }
+
+    #[test]
+    fn standalone_stickers_graffiti_and_cases_use_their_own_image_ids() {
+        use item_schema::ImageCatalogKind;
+
+        let mut schema = ItemSchema::from_json_with_collections(
+            r##"{
+                "items":{
+                    "1209":{"item_name":"#STICKER"},
+                    "1348":{"item_name":"#GRAFFITI"},
+                    "1349":{"item_name":"#UNSEALED"},
+                    "4001":{"item_name":"#CASE"}
+                },
+                "sticker_kits":{"4001":{"item_name":"#KIT","sticker_material":"test"}},
+                "music_kits":{"4001":{"loc_name":"#MUSIC"}},
+                "graffiti_tints":{"brick_red":{"id":1},"battle_green":{"id":2}}
+            }"##,
+            r#"{"sticker":"Sticker","graffiti":"Sealed Graffiti","unsealed":"Graffiti",
+                "case":"Test Case","kit":"Test Kit","music":"Test Music"}"#,
+            "{}",
+        )
+        .unwrap();
+        for (kind, json) in [
+            (
+                ImageCatalogKind::Definitions,
+                r#"[{"def_index":"4001","image":"https://cdn.steamstatic.com/case.png"}]"#,
+            ),
+            (
+                ImageCatalogKind::Stickers,
+                r#"[{"def_index":"4001","image":"https://cdn.steamstatic.com/sticker.png"}]"#,
+            ),
+            (
+                ImageCatalogKind::Graffiti,
+                r#"[{"def_index":"4001","image":"https://cdn.steamstatic.com/plain.png"},
+                    {"def_index":"4001","color_index":1,"image":"https://cdn.steamstatic.com/red.png"},
+                    {"def_index":"4001","color_index":2,"image":"https://cdn.steamstatic.com/green.png"}]"#,
+            ),
+            (
+                ImageCatalogKind::MusicKits,
+                r#"[{"def_index":"4001","name":"Test Music","image":"https://cdn.steamstatic.com/music.png"}]"#,
+            ),
+        ] {
+            schema.add_image_catalog(kind, json).unwrap();
+        }
+        for (definition, tint, expected) in [
+            (1209, None, "sticker"),
+            (1348, None, "plain"),
+            (1348, Some(1u32), "red"),
+            (1349, Some(2u32), "green"),
+            (4001, None, "case"),
+        ] {
+            let mut source = item();
+            source.definition_index = definition;
+            source.attributes = vec![
+                ItemAttribute {
+                    definition_index: 6,
+                    value: 0.0f32.to_le_bytes().to_vec(),
+                },
+                ItemAttribute {
+                    definition_index: 113,
+                    value: 4001u32.to_le_bytes().to_vec(),
+                },
+            ];
+            if let Some(tint) = tint {
+                source.attributes.push(ItemAttribute {
+                    definition_index: 233,
+                    value: tint.to_le_bytes().to_vec(),
+                });
+            }
+            let row = enrich_item(source, &schema);
+            assert_eq!(
+                row.image_url,
+                Some(format!("https://cdn.steamstatic.com/{expected}.png")),
+                "definition {definition}, tint {tint:?}"
+            );
+            if definition == 1209 {
+                assert_eq!(row.name, "Sticker | Test Kit");
+            } else if definition == 4001 {
+                assert_eq!(row.name, "Test Case");
+            }
+        }
+        assert_eq!(
+            schema.music_kit(4001).unwrap().image_url.as_deref(),
+            Some("https://cdn.steamstatic.com/music.png")
+        );
     }
 
     #[test]
@@ -638,7 +1071,10 @@ mod tests {
         assert_eq!(row.name, "★ StatTrak™ AK-47");
 
         let mut souvenir = item();
-        souvenir.definition_index = 140;
+        souvenir.attributes.push(ItemAttribute {
+            definition_index: 140,
+            value: vec![1],
+        });
         let row = enrich_item(souvenir, &schema);
         assert!(
             row.name.starts_with("Souvenir "),
@@ -721,7 +1157,12 @@ mod tests {
         // The bundled schema marks storage units "cannot trade".
         let mut casket = item();
         casket.definition_index = 1201;
-        assert!(!compute_moveable(&schema, &casket, "econ/tools/casket", "Storage Unit"));
+        assert!(!compute_moveable(
+            &schema,
+            &casket,
+            "econ/tools/casket",
+            "Storage Unit"
+        ));
 
         // Legacy hard-coded exclusions.
         let mut flagged = item();

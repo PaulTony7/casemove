@@ -682,6 +682,7 @@ mod tests {
             name: name.to_owned(),
             custom_name: None,
             image_url: None,
+            image_path: None,
             quantity: qty,
             rarity: 5,
             position: 0,
@@ -698,6 +699,11 @@ mod tests {
             equipped_ct: false,
             equipped_t: false,
             price,
+            collection: None,
+            trade_up_eligible: false,
+            stickers: Vec::new(),
+            music_kit: None,
+            graffiti: None,
         };
         GroupedItem {
             combined_qty: qty as usize,

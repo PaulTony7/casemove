@@ -62,10 +62,12 @@ pub struct CasemoveApp {
     pub overview_by: overview_view::OverviewBy,
 
     pub inventory: Option<InventorySnapshot>,
+    pending_inventory_events: Vec<AppEvent>,
     pub grouped: Vec<crate::inventory::GroupedItem>,
     pub majors: Vec<String>,
     pub inventory_busy: bool,
     pub inventory_error: String,
+    pub schema_notice: String,
     pub storage_selection: Option<(String, String)>,
     pub storage_contents: Option<Vec<InventoryItem>>,
     pub storage_busy: bool,
@@ -97,6 +99,10 @@ impl CasemoveApp {
             .store_get::<String>("overview.by")
             .and_then(|value| overview_view::OverviewBy::from_store(&value))
             .unwrap_or_default();
+        let mut view = inventory_view::InventoryViewState::default();
+        if let Some(columns) = core.store_get::<Vec<String>>("inventory.columns") {
+            view.set_columns(columns);
+        }
         let mut app = Self {
             core,
             rt,
@@ -126,10 +132,13 @@ impl CasemoveApp {
             overview_open: false,
             overview_by,
             inventory: None,
+            pending_inventory_events: Vec::new(),
             grouped: Vec::new(),
             majors: Vec::new(),
             inventory_busy: false,
             inventory_error: String::new(),
+            schema_notice: "Refreshing item and sticker data; cached or bundled data remains available."
+                .into(),
             storage_selection: None,
             storage_contents: None,
             storage_busy: false,
@@ -140,7 +149,7 @@ impl CasemoveApp {
             storage_aggregate_error: String::new(),
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
-            view: inventory_view::InventoryViewState::default(),
+            view,
         };
         app.initial_load();
         app
@@ -154,6 +163,11 @@ impl CasemoveApp {
             let session = core.steam_session();
             reply.send(Message::Initial { accounts, session });
         });
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            reply.send(Message::SchemaRefresh(core.refresh_item_schema().await));
+        });
     }
 
     // --- message handling -------------------------------------------------
@@ -166,6 +180,30 @@ impl CasemoveApp {
             }
             AppEvent::WalletChanged(info) => {
                 self.wallet = Some(info);
+            }
+            AppEvent::InventoryChanged {
+                steam_id,
+                reason,
+                item_id,
+                item,
+            } => {
+                if self
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.steam_id == steam_id)
+                    && !self.apply_inventory_delta(&steam_id, &item_id, item.as_deref().cloned())
+                {
+                    self.pending_inventory_events
+                        .push(AppEvent::InventoryChanged {
+                            steam_id,
+                            reason,
+                            item_id,
+                            item,
+                        });
+                }
+            }
+            AppEvent::InventoryError(error) => {
+                self.inventory_error = error;
             }
         }
     }
@@ -185,6 +223,61 @@ impl CasemoveApp {
                     Err(error) => self.login_error = error,
                 }
                 self.loading = false;
+            }
+            Message::SchemaRefresh(result) => match result {
+                Ok(report) => {
+                    self.schema_notice = if report.cache_used {
+                        "Using recently refreshed cached item and sticker data.".into()
+                    } else if report.warnings.is_empty() {
+                        format!(
+                            "Item data refreshed; {} image entries are available.",
+                            report.image_entries
+                        )
+                    } else {
+                        format!(
+                            "Item data refreshed with {} image entries. {}",
+                            report.image_entries,
+                            report.warnings.join(" ")
+                        )
+                    };
+                    if self.inventory.is_some() && self.storage_selection.is_none() {
+                        let core = self.core.clone();
+                        let reply = self.reply.clone();
+                        let attempt = self.attempt;
+                        self.rt.spawn(async move {
+                            reply.send(Message::InventoryMetadata(
+                                attempt,
+                                core.refresh_inventory_metadata().await,
+                            ));
+                        });
+                    }
+                }
+                Err(error) => {
+                    self.schema_notice = format!(
+                        "Could not refresh item data; cached or bundled data remains active. {error}"
+                    );
+                }
+            },
+            Message::InventoryMetadata(attempt, result) => {
+                if attempt == self.attempt && !self.inventory_busy {
+                    match result {
+                        Ok(Some(snapshot))
+                            if self
+                                .profile
+                                .as_ref()
+                                .is_some_and(|profile| profile.steam_id == snapshot.steam_id) =>
+                        {
+                            self.set_inventory(Some(snapshot));
+                            self.refresh_live_prices(false);
+                        }
+                        Ok(Some(_)) => {
+                            self.inventory_error =
+                                "The Steam session changed. Load inventory again.".into();
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.inventory_error = error,
+                    }
+                }
             }
             Message::Accounts(result) => match result {
                 Ok(list) => {
@@ -246,6 +339,10 @@ impl CasemoveApp {
                                 .is_some_and(|profile| profile.steam_id == snapshot.steam_id)
                             {
                                 self.set_inventory(Some(snapshot));
+                                let pending = std::mem::take(&mut self.pending_inventory_events);
+                                for event in pending {
+                                    self.handle_event(event);
+                                }
                                 self.refresh_live_prices(false);
                             } else {
                                 self.inventory_error =
@@ -329,6 +426,39 @@ impl CasemoveApp {
         self.view.page = 0;
     }
 
+    fn apply_inventory_delta(
+        &mut self,
+        steam_id: &str,
+        item_id: &str,
+        item: Option<InventoryItem>,
+    ) -> bool {
+        let Some(snapshot) = &mut self.inventory else {
+            return false;
+        };
+        if snapshot.steam_id != steam_id {
+            return false;
+        }
+        let previous = snapshot
+            .items
+            .iter()
+            .find(|current| current.id == item_id)
+            .cloned();
+        if item.as_ref() == previous.as_ref() {
+            return true;
+        }
+        snapshot.items.retain(|current| current.id != item_id);
+        if let Some(item) = item {
+            snapshot.items.push(item);
+        }
+        snapshot
+            .items
+            .sort_by_key(|item| (item.position, item.id.clone()));
+        let snapshot = snapshot.clone();
+        self.set_inventory(Some(snapshot));
+        self.refresh_live_prices(false);
+        true
+    }
+
     /// Fetches live Steam Market quotes for every distinct moveable item
     /// name (inventory plus open storage contents), skipping keys the cache
     /// still holds fresh unless `force` — the Refresh prices button. With
@@ -361,9 +491,7 @@ impl CasemoveApp {
         self.prices_busy = true;
         let reply = self.reply.clone();
         self.rt.spawn(async move {
-            reply.send(Message::LivePrices(
-                app_core::fetch_live_prices(keys).await,
-            ));
+            reply.send(Message::LivePrices(app_core::fetch_live_prices(keys).await));
         });
     }
 
@@ -594,6 +722,7 @@ impl CasemoveApp {
         self.qr_challenge = None;
         self.qr_texture = None;
         self.qr_error.clear();
+        self.pending_inventory_events.clear();
         self.set_inventory(None);
         self.inventory_open = false;
         self.overview_open = false;

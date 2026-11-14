@@ -61,12 +61,26 @@ impl ImageCache {
 }
 
 async fn fetch_image(url: &str) -> Result<egui::ColorImage, ()> {
-    let response = reqwest::get(url)
-        .await
-        .map_err(|_| ())?
-        .error_for_status()
-        .map_err(|_| ())?;
-    let bytes = response.bytes().await.map_err(|_| ())?;
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let response = reqwest::get(url)
+            .await
+            .map_err(|_| ())?
+            .error_for_status()
+            .map_err(|_| ())?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > 16 * 1024 * 1024)
+        {
+            return Err(());
+        }
+        let bytes = response.bytes().await.map_err(|_| ())?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(());
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| ())??;
     tokio::task::spawn_blocking(move || {
         let image = image::load_from_memory(&bytes).map_err(|_| ())?.to_rgba8();
         let size = [image.width() as usize, image.height() as usize];
@@ -77,6 +91,42 @@ async fn fetch_image(url: &str) -> Result<egui::ColorImage, ()> {
     })
     .await
     .map_err(|_| ())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires public Internet access"]
+    fn live_case_sticker_and_graffiti_images_decode() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for catalog in ["crates", "stickers", "graffiti"] {
+                let response = reqwest::get(format!(
+                    "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/{catalog}.json"
+                ))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+                let entries: Vec<serde_json::Value> = serde_json::from_str(&response).unwrap();
+                let entry = entries.iter().find(|entry| match catalog {
+                    "crates" => entry["name"] == "Recoil Case",
+                    "graffiti" => entry["color_index"] == 1,
+                    _ => entry["market_hash_name"].is_string(),
+                }).unwrap();
+                let url = entry["image"].as_str().unwrap().replace(
+                    "community.akamai.steamstatic.com",
+                    "community.steamstatic.com",
+                );
+                let image = fetch_image(&url).await.unwrap_or_else(|()| {
+                    panic!("Could not download and decode {catalog} image")
+                });
+                assert!(image.size[0] > 0 && image.size[1] > 0);
+            }
+        });
+    }
 }
 
 /// Paints `url` into a fixed box (contain-fit), or a fallback glyph when no

@@ -23,6 +23,7 @@ use steam_vent_proto_csgo::{
     gcsystemmsgs::ESOMsg,
 };
 use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
 
 const ECON_ITEM_TYPE: i32 = 1;
@@ -122,6 +123,14 @@ pub enum InventoryError {
 pub struct InventoryClient {
     coordinator: Option<GameCoordinator>,
     browser: Option<BrowserInventoryClient>,
+    changes: Option<mpsc::UnboundedReceiver<Result<InventoryChange, InventoryError>>>,
+    change_dispatcher: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InventoryChange {
+    Upsert(EconItem),
+    Remove(u64),
 }
 
 struct BrowserInventoryClient {
@@ -149,10 +158,13 @@ impl InventoryClient {
         .map_err(|_| InventoryError::TimedOut)?
         .map_err(|_| InventoryError::ConnectionFailed)?;
         let inventory = parse_inventory(&welcome)?;
+        let (changes, change_dispatcher) = steam_vent_changes(&coordinator);
         Ok((
             Self {
                 coordinator: Some(coordinator),
                 browser: None,
+                changes: Some(changes),
+                change_dispatcher: Some(change_dispatcher),
             },
             inventory,
         ))
@@ -168,6 +180,7 @@ impl InventoryClient {
             .await
             .map_err(|_| InventoryError::ConnectionFailed)?;
         let (sender, receiver) = mpsc::unbounded_channel();
+        let (change_sender, changes) = mpsc::unbounded_channel();
         let dispatcher_client = client.clone();
         let dispatcher = tokio::spawn(async move {
             loop {
@@ -180,6 +193,22 @@ impl InventoryClient {
                     Ok(Some(SteamEvent::Apps(AppsEvent::GCReceived(message))))
                         if message.appid == 730 =>
                     {
+                        match browser_casket_event(&message)
+                            .and_then(|event| event.map(inventory_changes).transpose())
+                        {
+                            Ok(Some(changes)) => {
+                                for change in changes {
+                                    if change_sender.send(Ok(change)).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = change_sender.send(Err(error));
+                                break;
+                            }
+                        }
                         if sender.send(message).is_err() {
                             break;
                         }
@@ -205,9 +234,17 @@ impl InventoryClient {
             Self {
                 coordinator: None,
                 browser: Some(browser),
+                changes: Some(changes),
+                change_dispatcher: None,
             },
             inventory,
         ))
+    }
+
+    pub fn take_changes(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<Result<InventoryChange, InventoryError>>> {
+        self.changes.take()
     }
 
     pub async fn refresh(&self) -> Result<Vec<EconItem>, InventoryError> {
@@ -310,6 +347,63 @@ impl InventoryClient {
     }
 }
 
+impl Drop for InventoryClient {
+    fn drop(&mut self) {
+        if let Some(dispatcher) = self.change_dispatcher.take() {
+            dispatcher.abort();
+        }
+    }
+}
+
+fn steam_vent_changes(
+    coordinator: &GameCoordinator,
+) -> (
+    mpsc::UnboundedReceiver<Result<InventoryChange, InventoryError>>,
+    JoinHandle<()>,
+) {
+    let create = coordinator.on::<SoCreate>().map(|message| {
+        message
+            .map(|message| single_object_event(&message.0, false))
+            .map_err(|_| InventoryError::ConnectionFailed)
+    });
+    let update = coordinator.on::<SoUpdate>().map(|message| {
+        message
+            .map(|message| single_object_event(&message.0, false))
+            .map_err(|_| InventoryError::ConnectionFailed)
+    });
+    let destroy = coordinator.on::<SoDestroy>().map(|message| {
+        message
+            .map(|message| single_object_event(&message.0, true))
+            .map_err(|_| InventoryError::ConnectionFailed)
+    });
+    let multiple = coordinator.on::<SoUpdateMultiple>().map(|message| {
+        message
+            .map_err(|_| InventoryError::ConnectionFailed)
+            .and_then(|message| multi_event(&message.0))
+    });
+    let mut events = create.merge(update).merge(destroy).merge(multiple);
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let dispatcher = tokio::spawn(async move {
+        while let Some(event) = events.next().await {
+            let result = event.and_then(inventory_changes);
+            match result {
+                Ok(changes) => {
+                    for change in changes {
+                        if sender.send(Ok(change)).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    return;
+                }
+            }
+        }
+    });
+    (receiver, dispatcher)
+}
+
 impl BrowserInventoryClient {
     async fn refresh(&self) -> Result<Vec<EconItem>, InventoryError> {
         let hello = client_hello();
@@ -374,7 +468,7 @@ impl BrowserInventoryClient {
         };
         let result = tokio::time::timeout(CASKET_LOAD_TIMEOUT, async {
             while let Some(message) = messages.recv().await {
-                if let Some(event) = browser_casket_event(message)?
+                if let Some(event) = browser_casket_event(&message)?
                     && collector.apply(event)?
                 {
                     return Ok(());
@@ -394,7 +488,7 @@ impl BrowserInventoryClient {
     }
 }
 
-fn browser_casket_event(message: GCMessage) -> Result<Option<CasketEvent>, InventoryError> {
+fn browser_casket_event(message: &GCMessage) -> Result<Option<CasketEvent>, InventoryError> {
     let event = match message.msg_type {
         kind if kind == ESOMsg::k_ESOMsg_Create as i32 as u32 => {
             let object = CMsgSOSingleObject::parse_from_bytes(&message.payload)
@@ -428,6 +522,20 @@ fn browser_casket_event(message: GCMessage) -> Result<Option<CasketEvent>, Inven
         _ => None,
     };
     Ok(event)
+}
+
+fn inventory_changes(event: CasketEvent) -> Result<Vec<InventoryChange>, InventoryError> {
+    let CasketEvent::Objects { upserts, removals } = event else {
+        return Ok(Vec::new());
+    };
+    let mut changes = Vec::with_capacity(upserts.len() + removals.len());
+    for bytes in upserts {
+        changes.push(InventoryChange::Upsert(parse_item(&bytes)?));
+    }
+    for bytes in removals {
+        changes.push(InventoryChange::Remove(removed_item_id(&bytes)?));
+    }
+    Ok(changes)
 }
 
 fn parse_item(bytes: &[u8]) -> Result<EconItem, InventoryError> {
@@ -819,6 +927,42 @@ mod tests {
     }
 
     #[test]
+    fn decodes_incremental_single_object_upserts_and_removals() {
+        let changes = inventory_changes(CasketEvent::Objects {
+            upserts: vec![item(7, 2)],
+            removals: vec![item(u64::MAX - 1, 1)],
+        })
+        .unwrap();
+        assert_eq!(
+            changes,
+            vec![
+                InventoryChange::Upsert(econ_item(
+                    CSOEconItem::parse_from_bytes(&item(7, 2)).unwrap()
+                )),
+                InventoryChange::Remove(u64::MAX - 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_incremental_items_instead_of_silently_dropping_them() {
+        assert_eq!(
+            inventory_changes(CasketEvent::Objects {
+                upserts: vec![vec![0xff]],
+                removals: vec![],
+            }),
+            Err(InventoryError::InvalidItem)
+        );
+        assert_eq!(
+            inventory_changes(CasketEvent::Objects {
+                upserts: vec![],
+                removals: vec![vec![0xff]],
+            }),
+            Err(InventoryError::InvalidItem)
+        );
+    }
+
+    #[test]
     fn empty_inventory_is_distinct_from_a_missing_cache() {
         assert!(parse_inventory(&welcome(vec![])).unwrap().is_empty());
         assert_eq!(
@@ -1119,11 +1263,13 @@ mod tests {
             inventory: Some(1),
             origin: Some(5),
             flags: Some(10),
-            equipped_state: vec![steam_vent_proto_csgo::base_gcmessages::CSOEconItemEquipped {
-                new_class: Some(2),
-                new_slot: Some(1),
-                ..Default::default()
-            }],
+            equipped_state: vec![
+                steam_vent_proto_csgo::base_gcmessages::CSOEconItemEquipped {
+                    new_class: Some(2),
+                    new_slot: Some(1),
+                    ..Default::default()
+                },
+            ],
             attribute: vec![
                 steam_vent_proto_csgo::base_gcmessages::CSOEconItemAttribute {
                     def_index: Some(75),
@@ -1150,10 +1296,7 @@ mod tests {
         assert_eq!(item.tradeable_after_secs, Some(1_800_000_000));
         assert_eq!(item.music_index, Some(3));
 
-        assert_eq!(
-            attribute_raw_u32(&item.attributes, 75),
-            Some(1_800_000_000)
-        );
+        assert_eq!(attribute_raw_u32(&item.attributes, 75), Some(1_800_000_000));
         assert_eq!(attribute_raw_u32(&item.attributes, 999), None);
         // Float-encoded attributes are not misread as raw u32s.
         let float_bytes = 4.0f32.to_le_bytes().to_vec();

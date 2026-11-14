@@ -1,88 +1,52 @@
 # Building Casemove
 
-The current app uses Rust, Leptos, Trunk, and Tauri 2. The Electron app under
-`legacy/` has a separate build process.
+The active desktop app is Rust + eframe/egui. The Electron app under `legacy/`
+is retained as the behavior reference and has a separate build process.
 
 ## Prerequisites
 
-Install Rust through rustup. The repository's `rust-toolchain.toml` selects the
-stable toolchain and installs the `wasm32-unknown-unknown` target automatically.
-On Windows, install Visual Studio Build Tools with the Desktop development with
-C++ workload and a Windows SDK. The desktop app requires the WebView2 runtime.
+Install the stable Rust toolchain selected by `rust-toolchain.toml`. On Windows,
+install Visual Studio Build Tools with the Desktop development with C++ workload
+and a Windows SDK.
 
-Install the frontend and desktop build tools:
-
-```powershell
-cargo install trunk --version 0.22.1 --locked
-cargo install tauri-cli --version 2.12.4 --locked
-```
-
-## Build
+## Build and run
 
 From the repository root:
 
 ```powershell
-cargo tauri build
-```
-
-This builds the WASM frontend and release desktop app, then packages installers.
-On Windows, the executable is `target/release/casemove.exe`; MSI and NSIS
-installers are under `target/release/bundle/`. Tauri downloads its WiX and NSIS
-packaging tools on first use, so the first build needs internet access.
-
-For native workspace compilation without frontend packaging:
-
-```powershell
 cargo build --workspace
+cargo run -p casemove-ui
 ```
 
-## Development
+Run the offline workspace tests and formatting check with:
 
 ```powershell
-cargo tauri dev
+cargo test --workspace
+cargo fmt --all -- --check
 ```
 
-Tauri starts Trunk automatically at `http://localhost:1420`.
+The eframe app has not yet been packaged for distribution. Cross-platform
+packaging and signing are tracked in `FEATURE_PARITY_CHECKLIST.md`.
 
-For a frontend-only preview, run `trunk serve --port 1421`. The browser does not
-have the Tauri IPC bridge, so saved accounts and Steam login are only available
-in the desktop app. Regular login accepts a username/password and an optional
-Steam Guard code; Steam may instead request approval in its mobile app. Login
-times out after 120 seconds and can be cancelled. Password and code fields clear
-on submission. Remember for later stores only the Steam refresh token in the
-OS keyring; account JSON and IPC replies contain metadata, not tokens. Secure
-storage failures leave the Steam session signed in and display a warning.
-Use the Sign in with saved login icon beside a remembered account to connect
-without re-entering a password. Migrated metadata without a new keyring token
-still requires password login; missing or rejected tokens produce an error.
-Removing a remembered account also removes its keyring token. Enable Show secret
-field to supply a Base64 Steam shared secret (20 decoded bytes) instead of a
-manual Guard code. Codes are generated locally when Steam requests a device
-code; the secret is never stored. QR login creates its challenge through
-`steam-auth-rs`, renders the QR locally, and can remember the resulting refresh
-token in the OS keyring. Browser-token login accepts the signed-in Steam
-browser's JSON and uses a separate Steam client connection; it does not remember
-that token. `steam-client-rs` does not provide the same token-zeroization
-guarantees as the native credential path. Live QR/browser-token and OS-keyring
-verification remain manual checks.
-Saved accounts retain imported avatar URLs from allowlisted Steam image hosts
-and can be reordered with the up/down controls; both profile metadata and order
-persist in native settings.
+## Inventory
 
 After signing in, open Inventory and choose Connect to CS2. Close running games
-first: the GC handshake marks this account as playing CS2. The read-only snapshot
-includes item names, wear, seed, nametags, and IDs; search/filter/sort and paging
-operate locally. Refresh has a 30-second GC timeout and reuses the established
-GC dispatcher. If the initial connection fails, sign out and sign back in before
-reconnecting; do not repeatedly create coordinators on one Steam session.
-Sign-out cancels requests and clears the displayed snapshot. Storage
-unit contents, transfers, and automatic live inventory updates are not ported.
+first: the GC handshake marks this account as playing CS2. The inventory reads a
+welcome snapshot, then applies incremental SO create/update/remove messages
+while the retained GC client is connected. Item enrichment currently includes
+bundled names, wear, seed, stickers/patches, known collection metadata, music
+kits, graffiti tint, storage counts, and trade-up eligibility. Inventory
+columns are configurable and persisted locally.
 
-On first desktop launch, legacy account metadata and preferences are imported
-into `settings.json` in Tauri's app configuration directory. Legacy files are
-left unchanged and encrypted credentials are not copied.
-
-Offline module tests: `cargo test -p steam-core -p gc-cs2 -p item-schema`.
-They do not contact Steam or require credentials. The production desktop login
-and inventory integration still needs a manual real-account check; enter
-credentials directly in the desktop app, not in test fixtures or logs.
+The bundled schema is available immediately. A validated live schema cache is
+used on later launches and refreshed at most once per 24 hours from the public
+Skinledger VDF files. Steam-hosted item and sticker image URLs are indexed from
+the public [CSGO-API dataset](https://github.com/ByMykel/CSGO-API); collection
+images remain available from the bundled catalog. Failed refreshes retain the
+last cached or bundled schema. Graffiti images use kit and tint IDs; standalone
+stickers/patches use kit IDs, separately from case definition IDs. Older image
+caches are invalidated automatically when these lookup rules change.
+Offline tests cover VDF parsing, image URL
+validation, and cache round-tripping, but live-account image rendering and the
+offline startup fallback still need verification. Storage contents are
+read-only; transfers are not implemented.

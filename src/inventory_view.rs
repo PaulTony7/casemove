@@ -7,6 +7,19 @@ use eframe::egui;
 use std::collections::HashSet;
 
 const PAGE_SIZE: usize = inventory::PAGE_SIZE;
+const INVENTORY_COLUMNS: [(&str, &str); 11] = [
+    ("item", "Item"),
+    ("rarity", "Rarity"),
+    ("wear", "Wear / Float"),
+    ("seed", "Seed"),
+    ("qty", "Qty"),
+    ("price", "Price"),
+    ("collection", "Collection"),
+    ("stickers", "Stickers / Patches"),
+    ("trade_up", "Trade-up"),
+    ("id", "Item ID"),
+    ("actions", "Actions"),
+];
 
 pub struct InventoryViewState {
     pub query: String,
@@ -17,6 +30,7 @@ pub struct InventoryViewState {
     pub selected_rarities: HashSet<String>,
     pub selected_majors: HashSet<String>,
     pub selected_properties: HashSet<String>,
+    pub visible_columns: HashSet<String>,
 }
 
 impl Default for InventoryViewState {
@@ -30,7 +44,34 @@ impl Default for InventoryViewState {
             selected_rarities: HashSet::new(),
             selected_majors: HashSet::new(),
             selected_properties: HashSet::new(),
+            visible_columns: [
+                "item", "rarity", "wear", "seed", "qty", "price", "id", "actions",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         }
+    }
+}
+
+impl InventoryViewState {
+    pub fn set_columns(&mut self, columns: Vec<String>) {
+        let valid: HashSet<&str> = INVENTORY_COLUMNS.iter().map(|(key, _)| *key).collect();
+        self.visible_columns = columns
+            .iter()
+            .map(String::as_str)
+            .filter(|column| valid.contains(column))
+            .map(str::to_owned)
+            .collect();
+        self.visible_columns.insert("item".to_owned());
+    }
+
+    pub fn columns(&self) -> Vec<String> {
+        INVENTORY_COLUMNS
+            .iter()
+            .filter(|(key, _)| self.visible_columns.contains(*key))
+            .map(|(key, _)| (*key).to_owned())
+            .collect()
     }
 }
 
@@ -49,6 +90,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         })
         .show(ui, |ui| {
             header(ui, app, &mut back, &mut refresh, &mut sign_out);
+            if !app.schema_notice.is_empty() {
+                ui.label(
+                    egui::RichText::new(&app.schema_notice)
+                        .size(11.0)
+                        .color(theme::MUTED),
+                );
+            }
             ui.add_space(16.0);
 
             if app.storage_selection.is_some() {
@@ -186,10 +234,12 @@ fn storage_section(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             );
         });
         ui.add_space(6.0);
+        let columns = app.view.columns();
         table(
             ui,
             &mut app.images,
             TableRows::Storage(items),
+            &columns,
             &mut None::<(String, String)>,
         );
     }
@@ -277,10 +327,12 @@ fn main_section(
     let start = effective_page * PAGE_SIZE;
     let end = (start + PAGE_SIZE).min(total);
 
+    let columns = app.view.columns();
     table(
         ui,
         &mut app.images,
         TableRows::Grouped(&rows[start..end]),
+        &columns,
         open_storage,
     );
 
@@ -306,6 +358,7 @@ fn main_section(
 }
 
 fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
+    let mut columns_changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 18.0;
         ui.horizontal(|ui| {
@@ -338,6 +391,9 @@ fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
                     "category",
                     "tradehold",
                     "price",
+                    "collection",
+                    "stickers",
+                    "storage",
                 ] {
                     ui.selectable_value(&mut app.view.sort, value.to_owned(), sort_label(value));
                 }
@@ -345,6 +401,26 @@ fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         if app.view.sort != before {
             app.view.page = 0;
         }
+        egui::ComboBox::from_id_salt("inventory-columns")
+            .selected_text("Columns")
+            .show_ui(ui, |ui| {
+                for (key, label) in INVENTORY_COLUMNS {
+                    if key == "item" {
+                        let mut visible = true;
+                        ui.add_enabled(false, egui::Checkbox::new(&mut visible, label));
+                        continue;
+                    }
+                    let mut visible = app.view.visible_columns.contains(key);
+                    if ui.checkbox(&mut visible, label).changed() {
+                        if visible {
+                            app.view.visible_columns.insert(key.to_owned());
+                        } else {
+                            app.view.visible_columns.remove(key);
+                        }
+                        columns_changed = true;
+                    }
+                }
+            });
         let prices_text = if app.prices_busy {
             "Updating prices…"
         } else {
@@ -361,6 +437,15 @@ fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             app.refresh_live_prices(true);
         }
     });
+    if columns_changed {
+        let columns = app.view.columns();
+        let core = app.core.clone();
+        drop(app.rt.spawn_blocking(move || {
+            if let Err(error) = core.store_set("inventory.columns", columns) {
+                eprintln!("casemove settings: {error}");
+            }
+        }));
+    }
     ui.add_space(14.0);
 }
 
@@ -373,6 +458,9 @@ fn sort_label(value: &str) -> &'static str {
         "category" => "Category",
         "tradehold" => "Tradehold",
         "price" => "Price",
+        "collection" => "Collection",
+        "stickers" => "Sticker count",
+        "storage" => "Storage name",
         _ => "Position",
     }
 }
@@ -410,10 +498,20 @@ fn filter_chips(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         }
         ui.add_space(6.0);
         filter_label(ui, "PROPERTIES");
-        for property in
-            ["Tradehold", "Nametag", "Moveable", "Equipped CT", "Equipped T"]
-        {
-            if chip(ui, app.view.selected_properties.contains(property), property) {
+        for property in [
+            "Tradehold",
+            "Nametag",
+            "Moveable",
+            "Equipped CT",
+            "Equipped T",
+            "Stickers",
+            "Patches",
+        ] {
+            if chip(
+                ui,
+                app.view.selected_properties.contains(property),
+                property,
+            ) {
                 inventory::toggle_filter(&mut app.view.selected_properties, property.to_owned());
             }
         }
@@ -528,36 +626,31 @@ fn table(
     ui: &mut egui::Ui,
     images: &mut ImageCache,
     rows: TableRows<'_>,
+    columns: &[String],
     open_storage: &mut Option<(String, String)>,
 ) {
     let width = ui.available_width();
     let table_height = (ui.available_height() - 44.0).max(240.0);
     let mut storage_action: Option<(String, String)> = None;
-    egui_extras::TableBuilder::new(ui)
+    let weights: Vec<f32> = columns.iter().map(|column| column_weight(column)).collect();
+    let weight_sum: f32 = weights.iter().sum();
+    let mut builder = egui_extras::TableBuilder::new(ui)
         .striped(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(egui_extras::Column::initial(width * 0.25).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.12).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.15).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.06).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.06).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.08).resizable(false))
-        .column(egui_extras::Column::initial(width * 0.18).resizable(false))
-        .column(egui_extras::Column::remainder())
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+    for (weight, _) in weights.iter().zip(columns) {
+        builder = builder
+            .column(egui_extras::Column::initial(width * weight / weight_sum).resizable(true));
+    }
+    builder
         .max_scroll_height(table_height)
         .header(30.0, |mut header| {
-            for label in [
-                "Item",
-                "Rarity",
-                "Wear / Float",
-                "Seed",
-                "Qty",
-                "Price",
-                "Item ID",
-                "Actions",
-            ] {
+            for column in columns {
                 header.col(|ui| {
-                    ui.label(egui::RichText::new(label).size(12.0).color(theme::MUTED));
+                    ui.label(
+                        egui::RichText::new(column_label(column))
+                            .size(12.0)
+                            .color(theme::MUTED),
+                    );
                 });
             }
         })
@@ -574,105 +667,70 @@ fn table(
                     }
                     TableRows::Storage(items) => (&items[index], items[index].quantity as usize),
                 };
-                row.col(|ui| identity_cell(ui, images, item));
-                row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(inventory::rarity_name(item.rarity))
-                            .size(12.0)
-                            .color(theme::rarity_color(item.rarity)),
-                    );
-                });
-                row.col(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(
-                                item.wear_name.clone().unwrap_or_else(|| "-".into()),
-                            )
-                            .size(12.0),
-                        );
-                        if let Some(wear) = item.wear {
+                for column in columns {
+                    row.col(|ui| match column.as_str() {
+                        "item" => identity_cell(ui, images, item),
+                        "rarity" => {
                             ui.label(
-                                egui::RichText::new(format!("{wear:.6}"))
+                                egui::RichText::new(inventory::rarity_name(item.rarity))
+                                    .size(12.0)
+                                    .color(theme::rarity_color(item.rarity)),
+                            );
+                        }
+                        "wear" => wear_cell(ui, item),
+                        "seed" => {
+                            ui.label(
+                                egui::RichText::new(
+                                    item.paint_seed
+                                        .map(|seed| seed.to_string())
+                                        .unwrap_or_else(|| "-".into()),
+                                )
+                                .size(12.0),
+                            );
+                        }
+                        "qty" => {
+                            ui.label(egui::RichText::new(display_qty.to_string()).size(12.0));
+                        }
+                        "price" => price_cell(ui, item, display_qty),
+                        "collection" => {
+                            ui.label(
+                                item.collection
+                                    .as_deref()
+                                    .map(|name| egui::RichText::new(name).size(11.0))
+                                    .unwrap_or_else(|| {
+                                        egui::RichText::new("-").color(theme::MUTED)
+                                    }),
+                            );
+                        }
+                        "stickers" => sticker_cell(ui, images, item),
+                        "trade_up" => {
+                            ui.label(if item.trade_up_eligible {
+                                "Eligible"
+                            } else {
+                                "-"
+                            });
+                        }
+                        "id" => {
+                            ui.label(
+                                egui::RichText::new(&item.id)
+                                    .monospace()
                                     .size(11.0)
                                     .color(theme::MUTED),
                             );
                         }
-                        if let Some(until) = item.trade_unlock {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|elapsed| elapsed.as_millis() as i64)
-                                .unwrap_or(0);
-                            let delta = until - now_ms;
-                            let days = delta.div_euclid(86_400_000)
-                                + i64::from(delta.rem_euclid(86_400_000) > 0);
-                            if days > 0 {
-                                ui.label(
-                                    egui::RichText::new(format!("{days} days tradehold"))
-                                        .size(11.0)
-                                        .color(theme::GREEN),
-                                );
+                        "actions" if item.is_storage_unit => {
+                            let contents = egui::Button::new(format!(
+                                "{}  Contents",
+                                egui_phosphor::regular::FOLDER_OPEN
+                            ))
+                            .fill(theme::RAISED);
+                            if ui.add(contents).clicked() {
+                                storage_action = Some((item.id.clone(), item.name.clone()));
                             }
                         }
+                        _ => {}
                     });
-                });
-                row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            item.paint_seed
-                                .map(|seed| seed.to_string())
-                                .unwrap_or_else(|| "-".into()),
-                        )
-                        .size(12.0),
-                    );
-                });
-                row.col(|ui| {
-                    ui.label(egui::RichText::new(display_qty.to_string()).size(12.0));
-                });
-                row.col(|ui| match item.price {
-                    Some(price) => {
-                        // Legacy `priceRow`: combined price (price x qty) on
-                        // top, the per-unit price beneath it — shown only
-                        // for stacks with a non-zero price.
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(pricing::format_usd(
-                                    price * display_qty as f64,
-                                ))
-                                .size(12.0),
-                            );
-                            if display_qty > 1 && price != 0.0 {
-                                ui.label(
-                                    egui::RichText::new(pricing::format_usd(price))
-                                        .size(10.0)
-                                        .color(theme::MUTED),
-                                );
-                            }
-                        });
-                    }
-                    None => {
-                        ui.label(egui::RichText::new("-").size(11.0).color(theme::MUTED));
-                    }
-                });
-                row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(&item.id)
-                            .monospace()
-                            .size(11.0)
-                            .color(theme::MUTED),
-                    );
-                });
-                row.col(|ui| {
-                    if item.is_storage_unit {
-                        let contents = egui::Button::new(format!(
-                            "{}  Contents",
-                            egui_phosphor::regular::FOLDER_OPEN
-                        ))
-                        .fill(theme::RAISED);
-                        if ui.add(contents).clicked() {
-                            storage_action = Some((item.id.clone(), item.name.clone()));
-                        }
-                    }
-                });
+                }
             });
         });
 
@@ -681,6 +739,117 @@ fn table(
     {
         *target = action;
     }
+}
+
+fn column_label(key: &str) -> &'static str {
+    INVENTORY_COLUMNS
+        .iter()
+        .find(|(column, _)| *column == key)
+        .map(|(_, label)| *label)
+        .unwrap_or("")
+}
+
+fn column_weight(key: &str) -> f32 {
+    match key {
+        "item" => 28.0,
+        "wear" => 15.0,
+        "collection" | "stickers" => 16.0,
+        "id" => 18.0,
+        "actions" => 12.0,
+        "rarity" => 10.0,
+        _ => 8.0,
+    }
+}
+
+fn wear_cell(ui: &mut egui::Ui, item: &InventoryItem) {
+    ui.vertical(|ui| {
+        ui.label(
+            egui::RichText::new(item.wear_name.clone().unwrap_or_else(|| "-".into())).size(12.0),
+        );
+        if let Some(wear) = item.wear {
+            ui.label(
+                egui::RichText::new(format!("{wear:.6}"))
+                    .size(11.0)
+                    .color(theme::MUTED),
+            );
+        }
+        if let Some(until) = item.trade_unlock {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as i64)
+                .unwrap_or(0);
+            let delta = until - now_ms;
+            let days = delta.div_euclid(86_400_000) + i64::from(delta.rem_euclid(86_400_000) > 0);
+            if days > 0 {
+                ui.label(
+                    egui::RichText::new(format!("{days} days tradehold"))
+                        .size(11.0)
+                        .color(theme::GREEN),
+                );
+            }
+        }
+    });
+}
+
+fn price_cell(ui: &mut egui::Ui, item: &InventoryItem, display_qty: usize) {
+    match item.price {
+        Some(price) => {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(pricing::format_usd(price * display_qty as f64)).size(12.0),
+                );
+                if display_qty > 1 && price != 0.0 {
+                    ui.label(
+                        egui::RichText::new(pricing::format_usd(price))
+                            .size(10.0)
+                            .color(theme::MUTED),
+                    );
+                }
+            });
+        }
+        None => {
+            ui.label(egui::RichText::new("-").size(11.0).color(theme::MUTED));
+        }
+    }
+}
+
+fn sticker_cell(ui: &mut egui::Ui, images: &mut ImageCache, item: &InventoryItem) {
+    if item.stickers.is_empty() {
+        ui.label(egui::RichText::new("-").size(11.0).color(theme::MUTED));
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for sticker in &item.stickers {
+            ui.horizontal(|ui| {
+                images::media_box(
+                    ui,
+                    images,
+                    sticker.image_url.as_deref(),
+                    egui::vec2(24.0, 24.0),
+                    egui::CornerRadius::ZERO,
+                    egui_phosphor::regular::PACKAGE,
+                    14.0,
+                    egui::Color32::from_rgb(0x6b, 0x72, 0x80),
+                );
+                let response = ui.label(
+                    egui::RichText::new(format!("{} · {}", sticker.name, sticker.kind)).size(11.0),
+                );
+                let mut details = vec![format!("Slot: {}", sticker.slot)];
+                for (label, value) in [
+                    ("Wear", sticker.wear),
+                    ("Scale", sticker.scale),
+                    ("Rotation", sticker.rotation),
+                    ("X offset", sticker.offset_x),
+                    ("Y offset", sticker.offset_y),
+                ] {
+                    if let Some(value) = value {
+                        details.push(format!("{label}: {value:.4}"));
+                    }
+                }
+                response.on_hover_text(details.join("\n"));
+            });
+        }
+    });
 }
 
 fn identity_cell(ui: &mut egui::Ui, images: &mut ImageCache, item: &InventoryItem) {
@@ -726,4 +895,22 @@ fn identity_cell(ui: &mut egui::Ui, images: &mut ImageCache, item: &InventoryIte
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configurable_columns_keep_item_visible_and_discard_unknown_values() {
+        let mut view = InventoryViewState::default();
+        assert_eq!(
+            view.columns(),
+            [
+                "item", "rarity", "wear", "seed", "qty", "price", "id", "actions"
+            ]
+        );
+        view.set_columns(vec!["stickers".into(), "unknown".into()]);
+        assert_eq!(view.columns(), ["item", "stickers"]);
+    }
 }

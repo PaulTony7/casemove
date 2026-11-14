@@ -52,7 +52,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Live-account and incremental-event parity pending | ◐ |
+| `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Retained GC client also streams SO create/update/remove deltas to the UI; live-account verification pending | ◐ |
 | `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Validates the ID against the loaded inventory, derives the expected count from attribute 270, and returns only notification-confirmed complete contents; errors return `Err` instead of `[0]` | ◐ |
 | `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ☐ |
 | `storage_remove_item(casket_id, item_id, fast) -> MoveAck` | `removeFromStorageUnit` + `-reply` | Same pattern, `CasketRemoved` | ☐ |
@@ -97,7 +97,7 @@ entries never sent (`errorMain`, `checkSteam`, `closeSteam`, `login`,
 
 | New event | Legacy channel | Payload | Status |
 |---|---|---|---|
-| `inventory:changed` | `userEvents` code 1 | `{ reason: itemRemoved\|itemChanged\|itemAcquired, item, items }` (legacy tuple `[1, desc, [item, enriched]]`) | ☐ |
+| `inventory:changed` | `userEvents` code 1 | `{ reason: itemRemoved\|itemChanged\|itemAcquired, item, itemId }`; updates the UI snapshot from retained-client SO create/update/remove messages. Live-account verification pending | ◐ |
 | `steam:connection` | `userEvents` code 2 | `{ state: disconnected\|reconnected\|fatalError }` | ☐ |
 | `gc:connection` | `userEvents` code 3 | `{ state: connected\|disconnected, reason? }` | ☐ |
 | `wallet:changed` | `userEvents` code 4 | `WalletInfo { hasWallet, balance, currency }` — balance in whole currency units (raw cents ÷ 100), currency mapped from Steam's numeric codes like legacy | ☑ |

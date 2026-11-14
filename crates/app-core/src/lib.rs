@@ -5,17 +5,20 @@
 mod accounts;
 mod inventory;
 mod prices;
+mod schema;
 mod session;
 
 pub use accounts::initialize_store;
 pub use inventory::InventoryState;
 pub use prices::fetch_live_prices;
+pub use schema::SchemaRefreshReport;
 
 use app_commands::{SteamProfile, WalletInfo};
 use item_schema::ItemSchema;
 use settings::SettingsStore;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, RwLock};
 use steam_core::{SessionManager, SteamClient};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -27,6 +30,13 @@ pub type DesktopSession = SessionManager<SteamClient>;
 pub enum AppEvent {
     QrChallenge(String),
     WalletChanged(WalletInfo),
+    InventoryChanged {
+        steam_id: String,
+        reason: app_commands::InventoryChangeReason,
+        item_id: String,
+        item: Option<Box<app_commands::InventoryItem>>,
+    },
+    InventoryError(String),
 }
 
 /// Delivers core events to the UI and requests a repaint when one lands.
@@ -56,7 +66,9 @@ pub struct Core {
     pub profile: Arc<Mutex<Option<SteamProfile>>>,
     pub inventory: Arc<InventoryState>,
     pub store: Arc<Mutex<SettingsStore>>,
-    pub schema: Arc<ItemSchema>,
+    pub schema: Arc<RwLock<Arc<ItemSchema>>>,
+    schema_cache_path: Arc<PathBuf>,
+    schema_cache_valid: Arc<AtomicBool>,
     pub events: EventSink,
 }
 
@@ -69,8 +81,25 @@ impl Core {
             settings::legacy::legacy_store_candidates(),
         )
         .map_err(|error| format!("Could not open settings: {error}"))?;
-        let schema = ItemSchema::bundled()
-            .map_err(|error| format!("Could not load the bundled item schema: {error}"))?;
+        let schema_path = config_dir().join("item-schema-cache.json");
+        let (schema, schema_cache_valid) = match ItemSchema::load_cache(&schema_path) {
+            Ok(Some(schema)) => (schema, true),
+            Ok(None) => (
+                ItemSchema::bundled().map_err(|error| {
+                    format!("Could not load the bundled item schema: {error}")
+                })?,
+                false,
+            ),
+            Err(error) => {
+                eprintln!("{error}; using the bundled item schema.");
+                (
+                    ItemSchema::bundled().map_err(|error| {
+                        format!("Could not load the bundled item schema: {error}")
+                    })?,
+                    false,
+                )
+            }
+        };
         Ok(Self {
             session: Arc::new(SessionManager::new(
                 steam_core::SteamClient,
@@ -79,9 +108,18 @@ impl Core {
             profile: Arc::new(Mutex::new(None)),
             inventory: Arc::new(InventoryState::default()),
             store: Arc::new(Mutex::new(store)),
-            schema: Arc::new(schema),
+            schema: Arc::new(RwLock::new(Arc::new(schema))),
+            schema_cache_path: Arc::new(schema_path),
+            schema_cache_valid: Arc::new(AtomicBool::new(schema_cache_valid)),
             events,
         })
+    }
+
+    fn schema_snapshot(&self) -> Result<Arc<ItemSchema>, String> {
+        self.schema
+            .read()
+            .map(|schema| schema.clone())
+            .map_err(|_| "The item schema is unavailable.".to_owned())
     }
 
     /// Generic dot-path setting read (e.g. `overview.by`).
