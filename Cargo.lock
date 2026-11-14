@@ -682,6 +682,7 @@ name = "casemove"
 version = "0.1.0"
 dependencies = [
  "app-commands",
+ "domain",
  "gc-cs2",
  "item-schema",
  "reqwest 0.13.5",
@@ -704,6 +705,7 @@ version = "0.1.0"
 dependencies = [
  "app-commands",
  "console_error_panic_hook",
+ "domain",
  "icondata",
  "js-sys",
  "leptos",

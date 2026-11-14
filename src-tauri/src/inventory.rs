@@ -132,6 +132,15 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         name = format!("★ {name}");
     }
     let position = item.legacy_position();
+    // Category from the econ path (legacy matched `item_url`), major from the
+    // final display name exactly like legacy's post-prefix `getCategory`.
+    let category = description
+        .image_path
+        .as_deref()
+        .or(description.image_url.as_deref())
+        .and_then(domain::classify_category)
+        .map(str::to_owned);
+    let major = domain::classify_major(&name).map(str::to_owned);
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
@@ -146,6 +155,8 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         paint_seed,
         stat_trak,
         is_storage_unit: item.definition_index == 1201,
+        category,
+        major,
     }
 }
 
@@ -504,6 +515,27 @@ mod tests {
             "expected Souvenir prefix, got {}",
             row.name
         );
+    }
+
+    #[test]
+    fn classified_categories_come_from_the_econ_path() {
+        let schema = ItemSchema::bundled().unwrap();
+
+        // Painted weapon -> econ/default_generated/... -> Skins & Knives.
+        // Attribute values are float32-encoded on the wire (legacy reads them
+        // with readFloatLE).
+        let mut painted = item();
+        painted.attributes.push(ItemAttribute {
+            definition_index: 6,
+            value: 2.0f32.to_le_bytes().to_vec(),
+        });
+        let row = enrich_item(painted, &schema);
+        assert_eq!(row.category.as_deref(), Some("Skins & Knives"));
+        assert_eq!(row.major, None);
+
+        // Plain weapon -> econ/weapons/base_weapons/... -> legacy leftover bucket.
+        let row = enrich_item(item(), &schema);
+        assert_eq!(row.category, None);
     }
 
     #[test]

@@ -62,9 +62,11 @@ Rust working tree, including the pending storage-contents integration.
 - [ ] Incremental SO-cache create/update/remove handling and automatic UI updates.
 - [x] Group equivalent items, retain their individual IDs, and show combined quantities (legacy `combineInventory` key: name, nametag, image URL, wear name, exact float).
 - [x] Quantity sort (descending over combined quantities, normalized-name tie-break).
-- [ ] Category and subcategory classification/filtering.
-- [ ] Rarity-selection and item-property filters, including tradehold and stickers.
-- [ ] Price, category, collection, sticker, tradehold, and storage-name sorts.
+- [x] Category and subcategory classification/filtering (legacy `getCategory`:8 URL-based categories first-match in legacy order, majors by lowest-name-position match; category/rarity/major filter chips with OR-within/AND-across semantics).
+- [x] Rarity-selection filter (tier names via the shared rarity labels).
+- [ ] Item-property filters (tradehold, stickers, equipped state).
+- [x] Category sort (ascending, uncategorized first, normalized-name tie-break).
+- [ ] Price, collection, sticker, tradehold, and storage-name sorts.
 - [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
 - [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.

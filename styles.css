@@ -212,3 +212,11 @@ img.avatar.account-avatar { object-fit: cover; }
 .session-summary .wallet-balance { display: block; }
 .session-details .wallet-balance { margin-top: 8px; }
 .session-details img.avatar { margin: 0 auto 12px; }
+
+/* Inventory category/rarity/major filter chips */
+.inventory-filters { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; align-items: center; }
+.filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.filter-label { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
+.filter-chip { border: 1px solid rgba(128, 128, 128, 0.45); border-radius: 999px; padding: 2px 10px; font-size: 0.78rem; cursor: pointer; background: transparent; color: inherit; }
+.filter-chip:hover { border-color: rgba(128, 128, 128, 0.9); }
+.filter-chip.active { background: #3b82f6; border-color: #3b82f6; color: #fff; }
