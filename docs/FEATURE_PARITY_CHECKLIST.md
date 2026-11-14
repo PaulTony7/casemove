@@ -32,7 +32,11 @@ live in git history.
 - [ ] Sticker/patch metadata, images, and applied-item details.
 - [ ] Music-kit, graffiti/tint, agent, and other specialized-item enrichment.
 - [ ] Collection metadata and trade-up eligibility.
-- [ ] Complete image coverage and live schema refresh with bundled fallback.
+- [x] Complete image coverage and live schema refresh with bundled fallback
+  (econ-path image catalog fetched at startup with a weekly disk cache;
+  skinledger items_game/csgo_english VDF replaces the bundled schema on
+  success — repeated top-level sections merge — and the bundled schema
+  stays on any failure).
 - [ ] Configurable inventory columns.
 
 ## Storage Units

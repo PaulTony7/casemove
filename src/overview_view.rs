@@ -207,32 +207,46 @@ fn overview_data(app: &CasemoveApp) -> OverviewData {
 
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut load = false;
+    let mut connect_inventory = false;
     egui::Frame::NONE
         .inner_margin(egui::Margin {
-            left: 28,
-            right: 28,
-            top: 32,
-            bottom: 16,
+            left: theme::PAGE_MARGIN,
+            right: theme::PAGE_MARGIN,
+            top: 14,
+            bottom: 10,
         })
         .show(ui, |ui| {
             header(ui, app, &mut load);
-            ui.add_space(16.0);
+            ui.add_space(10.0);
             if !app.storage_aggregate_error.is_empty() {
                 inventory_view::error_box(ui, &app.storage_aggregate_error, None);
             }
             if app.inventory.is_none() {
-                inventory_view::empty_state(ui, "Inventory not loaded");
+                let connect = inventory_view::empty_state(
+                    ui,
+                    "Inventory not loaded",
+                    Some((
+                        "Load inventory",
+                        egui_phosphor::regular::ARROW_CLOCKWISE,
+                    )),
+                );
+                if connect {
+                    connect_inventory = true;
+                }
                 return;
             }
             let data = overview_data(app);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 cards(ui, &data);
-                ui.add_space(16.0);
-                charts(ui, app.overview_by, &data);
+                ui.add_space(12.0);
+                charts(ui, app, &data);
             });
         });
     if load {
         app.load_all_storage();
+    }
+    if connect_inventory {
+        app.refresh_inventory();
     }
 }
 
@@ -261,27 +275,9 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
                     greeting(),
                     profile_display_name(app.profile.clone())
                 ))
-                .size(26.0)
+                .size(theme::TITLE_SIZE)
                 .strong(),
             );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Group by").size(12.0).color(theme::MUTED),
-                );
-                let before = app.overview_by;
-                egui::ComboBox::from_id_salt("overview-by")
-                    .selected_text(before.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut app.overview_by, OverviewBy::Price, "Price");
-                        ui.selectable_value(&mut app.overview_by, OverviewBy::Volume, "Volume");
-                    });
-                if app.overview_by != before {
-                    app.save_overview_by();
-                }
-            });
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let units = app
                 .inventory
                 .as_ref()
@@ -293,10 +289,24 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
                         .count()
                 })
                 .unwrap_or(0);
-            let text = if app.storage_aggregate_busy {
+            let detail = if app.storage_aggregate_busy {
                 "Loading storage units...".to_owned()
             } else if app.storage_aggregate.is_some() {
-                format!("{units} Storage units loaded")
+                format!("{units} storage units loaded")
+            } else {
+                "Storage units not loaded".to_owned()
+            };
+            ui.label(
+                egui::RichText::new(detail)
+                    .size(theme::MUTED_SIZE)
+                    .color(theme::MUTED),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let text = if app.storage_aggregate_busy {
+                "Loading…".to_owned()
+            } else if app.storage_aggregate.is_some() {
+                "Reload units".to_owned()
             } else {
                 "Load storage units".to_owned()
             };
@@ -342,33 +352,33 @@ fn cards(ui: &mut egui::Ui, data: &OverviewData) {
         ),
     ];
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, title, value, items) in entries {
             egui::Frame::NONE
                 .fill(theme::SURFACE)
                 .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
-                .inner_margin(egui::Margin::same(14))
+                .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.set_min_width(width);
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(icon).size(24.0).color(theme::MUTED),
+                            egui::RichText::new(icon).size(18.0).color(theme::MUTED),
                         );
                         ui.vertical(|ui| {
                             ui.label(
                                 egui::RichText::new(title)
-                                    .size(13.0)
+                                    .size(11.0)
                                     .color(theme::MUTED),
                             );
                             ui.label(
                                 egui::RichText::new(pricing::format_usd_whole(value))
-                                    .size(20.0)
+                                    .size(17.0)
                                     .strong()
                                     .color(theme::GREEN),
                             );
                             ui.label(
-                                egui::RichText::new(format!("/ {items} Items"))
-                                    .size(12.0)
+                                egui::RichText::new(format!("/ {items} items"))
+                                    .size(11.0)
                                     .color(theme::MUTED),
                             );
                         });
@@ -378,11 +388,31 @@ fn cards(ui: &mut egui::Ui, data: &OverviewData) {
     });
 }
 
-fn charts(ui: &mut egui::Ui, by: OverviewBy, data: &OverviewData) {
+fn charts(ui: &mut egui::Ui, app: &mut CasemoveApp, data: &OverviewData) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Group by")
+                .size(theme::MUTED_SIZE)
+                .color(theme::MUTED),
+        );
+        let before = app.overview_by;
+        for value in [OverviewBy::Price, OverviewBy::Volume] {
+            if ui
+                .selectable_value(&mut app.overview_by, value, value.label())
+                .clicked()
+                && app.overview_by != before
+            {
+                app.save_overview_by();
+            }
+        }
+    });
+    ui.add_space(6.0);
+
+    let by = app.overview_by;
     let total_width = ui.available_width();
-    let height = 440.0;
-    let spacing = 12.0;
-    let margin = 24.0;
+    let height = 300.0;
+    let spacing = 10.0;
+    let margin = 16.0;
     let usable = (total_width - spacing - 2.0 * margin).max(320.0);
     let bar_content = usable * 0.56;
     let pie_content = usable - bar_content;
@@ -391,7 +421,7 @@ fn charts(ui: &mut egui::Ui, by: OverviewBy, data: &OverviewData) {
         ui.spacing_mut().item_spacing.x = spacing;
         egui::Frame::NONE
             .fill(theme::RAISED)
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 let (response, painter) = ui.allocate_painter(
                     egui::vec2(bar_content, height),
@@ -401,7 +431,7 @@ fn charts(ui: &mut egui::Ui, by: OverviewBy, data: &OverviewData) {
             });
         egui::Frame::NONE
             .fill(theme::RAISED)
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 let (response, painter) = ui.allocate_painter(
                     egui::vec2(pie_content, height),
@@ -443,8 +473,8 @@ fn paint_bars(painter: &egui::Painter, rect: egui::Rect, bars: &[Bar], by: Overv
     }
 
     let plot = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 54.0, rect.top() + 46.0),
-        egui::pos2(rect.right() - 6.0, rect.bottom() - 140.0),
+        egui::pos2(rect.left() + 54.0, rect.top() + 40.0),
+        egui::pos2(rect.right() - 6.0, rect.bottom() - 118.0),
     );
     if plot.width() <= 4.0 || plot.height() <= 4.0 {
         return;
@@ -515,9 +545,9 @@ fn paint_bars(painter: &egui::Painter, rect: egui::Rect, bars: &[Bar], by: Overv
             STORAGE_COLOR,
         );
 
-        // Legacy labels 40 characters; vertical space here fits ~18.
+        // Legacy labels 40 characters; vertical space here fits ~16.
         let galley = painter.layout_no_wrap(
-            truncate(&bar.name, 18),
+            truncate(&bar.name, 16),
             egui::FontId::proportional(11.0),
             theme::MUTED,
         );
@@ -605,7 +635,7 @@ fn paint_pie(painter: &egui::Painter, rect: egui::Rect, data: &OverviewData, by:
         angle += span;
     }
 
-    let mut y = rect.top() + 26.0;
+    let mut y = rect.top() + 24.0;
     let legend_x = rect.right() - legend_width + 4.0;
     for (index, value) in &slices {
         let (value_key, name) = domain::CATEGORIES[*index];
@@ -637,7 +667,7 @@ fn paint_pie(painter: &egui::Painter, rect: egui::Rect, data: &OverviewData, by:
             egui::FontId::proportional(10.0),
             theme::MUTED,
         );
-        y += 30.0;
+        y += 29.0;
     }
 }
 
@@ -682,6 +712,7 @@ mod tests {
             name: name.to_owned(),
             custom_name: None,
             image_url: None,
+            image_path: None,
             quantity: qty,
             rarity: 5,
             position: 0,

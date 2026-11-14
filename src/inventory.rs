@@ -256,6 +256,7 @@ mod tests {
             name: name.to_owned(),
             custom_name: None,
             image_url: None,
+            image_path: None,
             quantity: 1,
             rarity,
             position,

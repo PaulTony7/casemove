@@ -154,6 +154,10 @@ pub struct InventoryItem {
     pub name: String,
     pub custom_name: Option<String>,
     pub image_url: Option<String>,
+    /// Econ image path (`econ/...`) for catalog lookups when the bundled
+    /// `image_url` has no entry.
+    #[serde(default)]
+    pub image_path: Option<String>,
     pub quantity: u32,
     pub rarity: u32,
     pub position: u32,

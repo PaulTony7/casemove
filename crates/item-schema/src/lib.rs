@@ -1,5 +1,7 @@
 //! Item schema: items_game/csgo_english loading and inventory conversion.
 
+mod vdf;
+
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -26,26 +28,70 @@ impl ItemSchema {
                 "../../../legacy/src/main/helpers/classes/steam/items/itemsBackupFiles/csgo_english.json"
             ),
         )?;
-        let collections: HashMap<String, HashMap<String, Value>> = serde_json::from_str(
-            include_str!("../../../legacy/src/main/helpers/classes/steam/backup/collections.json"),
-        )?;
-        for collection in collections.into_values() {
-            for (name, entry) in collection {
-                if let Some(mut url) = entry
-                    .get("imageURL")
-                    .and_then(Value::as_str)
-                    .and_then(|value| url::Url::parse(value).ok())
-                    && url.host_str() == Some("media.steampowered.com")
-                    && url.set_scheme("https").is_ok()
-                {
-                    schema.image_urls.insert(name, url.to_string());
-                }
-            }
-        }
+        schema.image_urls = collection_images()?;
         Ok(schema)
     }
 
-    fn from_json(schema: &str, translations: &str) -> Result<Self, serde_json::Error> {
+    /// The live skinledger dump: the same section layout as the bundled
+    /// JSON, extracted exactly like legacy's `updateItems`. Any failure
+    /// leaves the caller on the bundled fallback.
+    pub fn from_vdf(items_vdf: &str, translations_vdf: &str) -> Result<Self, String> {
+        let root = vdf::parse(items_vdf, true)?;
+        let items_game = root
+            .get("items_game")
+            .ok_or_else(|| "the live schema has no items_game section".to_owned())?;
+        let section = |key: &str| items_game.get(key).cloned().unwrap_or(Value::Null);
+        let casket_icons = items_game
+            .get("alternate_icons2")
+            .and_then(|icons| icons.get("casket_icons"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let schema = Value::Object(
+            [
+                ("items", section("items")),
+                ("paint_kits", section("paint_kits")),
+                ("prefabs", section("prefabs")),
+                ("sticker_kits", section("sticker_kits")),
+                ("music_kits", section("music_definitions")),
+                ("graffiti_tints", section("graffiti_tints")),
+                ("casket_icons", casket_icons),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+        );
+        // Legacy validates the pull the same way (`returnValue['items'][1209]`).
+        if schema.get("items").and_then(|items| items.get("7")).is_none() {
+            return Err("the live schema is missing core item definitions".to_owned());
+        }
+
+        let english = vdf::parse(translations_vdf, false)?;
+        let mut translations = HashMap::new();
+        if let Some(tokens) = english.get("lang").and_then(|lang| lang.get("Tokens"))
+            && let Some(tokens) = tokens.as_object()
+        {
+            for (key, value) in tokens {
+                if let Some(text) = value.as_str() {
+                    translations.insert(
+                        key.trim_start_matches('#').to_lowercase(),
+                        text.to_owned(),
+                    );
+                }
+            }
+        }
+        if translations.is_empty() {
+            return Err("the live translation file has no tokens".to_owned());
+        }
+
+        Ok(Self {
+            schema,
+            translations,
+            image_urls: collection_images()
+                .map_err(|error| format!("could not load the image catalog: {error}"))?,
+        })
+    }
+
+    pub fn from_json(schema: &str, translations: &str) -> Result<Self, serde_json::Error> {
         Ok(Self {
             schema: serde_json::from_str(schema)?,
             translations: serde_json::from_str(translations)?,
@@ -158,6 +204,52 @@ impl ItemSchema {
             .get("attributes")?
             .get(key)
     }
+
+    /// Image path for a music kit definition (attribute 166), the legacy
+    /// music-kit image override.
+    pub fn music_image(&self, music_index: u32) -> Option<String> {
+        self.schema
+            .get("music_kits")?
+            .get(music_index.to_string())?
+            .get("image_inventory")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// Icon path for a storage-unit icon (attribute 70), the legacy casket
+    /// image override.
+    pub fn casket_icon(&self, icon_index: u32) -> Option<String> {
+        self.schema
+            .get("casket_icons")?
+            .get(icon_index.to_string())?
+            .get("icon_path")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+}
+
+/// Bundled collection thumbnails by item name (legacy `collections.json`),
+/// upgraded to HTTPS. Every known image host is accepted — the file ships
+/// with the app.
+fn collection_images() -> Result<HashMap<String, String>, serde_json::Error> {
+    let collections: HashMap<String, HashMap<String, Value>> = serde_json::from_str(include_str!(
+        "../../../legacy/src/main/helpers/classes/steam/backup/collections.json"
+    ))?;
+    let mut image_urls = HashMap::new();
+    for collection in collections.into_values() {
+        for (name, entry) in collection {
+            if let Some(mut url) = entry
+                .get("imageURL")
+                .and_then(Value::as_str)
+                .and_then(|value| url::Url::parse(value).ok())
+                && matches!(url.scheme(), "http" | "https")
+                && url.set_scheme("https").is_ok()
+            {
+                image_urls.insert(name, url.to_string());
+            }
+        }
+    }
+    Ok(image_urls)
 }
 
 #[cfg(test)]
@@ -217,6 +309,85 @@ mod tests {
                 .image_url
                 .unwrap()
                 .ends_with(".f4ee68bc3bbd972ded65ec36b66259199b7fafb7.png")
+        );
+    }
+
+    #[test]
+    fn live_vdf_schema_matches_the_bundled_json_shape() {
+        let live = ItemSchema::from_vdf(
+            r##"
+            "items_game"
+            {
+                "items"
+                {
+                    "7" { "name" "weapon_ak47" "prefab" "rifle" "baseitem" "1" }
+                    "1" { "attributes" { "cannot trade" "1" } }
+                }
+                "prefabs"
+                {
+                    "rifle" { "prefab" "weapon" "item_name" "#AK" }
+                    "weapon" { "item_name" "#AK" }
+                }
+                "paint_kits" { "44" { "name" "test_paint" "description_tag" "#Finish" } }
+                "music_definitions" { "3" { "image_inventory" "econ/music_kits/noisia_01" } }
+                "alternate_icons2" { "casket_icons" { "5" { "icon_path" "econ/tools/casket" } } }
+            }"##,
+            r##""lang" { "Tokens" { "#AK" "AK-47" "#Finish" "Test Finish" } }"##,
+        )
+        .unwrap();
+
+        let bundled_shape = ItemSchema::from_json(
+            r##"{
+			"items":{"7":{"name":"weapon_ak47","prefab":"rifle","baseitem":1},"1":{"attributes":{"cannot trade":1}}},
+			"prefabs":{"rifle":{"prefab":"weapon","item_name":"#AK"},"weapon":{"item_name":"#AK"}},
+			"paint_kits":{"44":{"name":"test_paint","description_tag":"#Finish"}}
+			}"##,
+            r#"{"ak":"\"AK-47\"","finish":"\"Test Finish\""}"#,
+        )
+        .unwrap();
+
+        assert_eq!(live.describe(7, Some(44)), bundled_shape.describe(7, Some(44)));
+        assert_eq!(live.describe(7, Some(44)).name, "AK-47 | Test Finish");
+        assert_eq!(
+            live.describe(7, None).image_path.as_deref(),
+            Some("econ/weapons/base_weapons/weapon_ak47")
+        );
+
+        // Numeric coercion keeps the `u64` reads working (compute_moveable).
+        assert_eq!(
+            live.item_attribute(1, "cannot trade")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+
+        // Legacy image overrides come from the extracted sections.
+        assert_eq!(
+            live.music_image(3).as_deref(),
+            Some("econ/music_kits/noisia_01")
+        );
+        assert_eq!(live.casket_icon(5).as_deref(), Some("econ/tools/casket"));
+        assert_eq!(live.music_image(999), None);
+        assert_eq!(live.casket_icon(999), None);
+    }
+
+    #[test]
+    fn live_schema_without_core_data_is_rejected_for_the_bundled_fallback() {
+        assert!(
+            ItemSchema::from_vdf(
+                r#""items_game" { "items" { } }"#,
+                r##""lang" { "Tokens" { "#A" "A" } }"##
+            )
+            .is_err()
+        );
+        assert!(
+            ItemSchema::from_vdf(
+                r#""items_game" { "items" { "7" { "name" "weapon_ak47" } } }"#,
+                r#""lang" { "Tokens" { } }"#
+            )
+            .is_err()
+        );
+        assert!(
+            ItemSchema::from_vdf("not vdf", r##""lang" { "Tokens" { "#A" "A" } }"##).is_err()
         );
     }
 }

@@ -60,6 +60,11 @@ pub struct CasemoveApp {
     pub inventory_open: bool,
     pub overview_open: bool,
     pub overview_by: overview_view::OverviewBy,
+    /// Persisted sidebar width and the last inventory page.
+    pub sidebar_width: f32,
+    pub saved_page: usize,
+    /// Account row currently being dragged to reorder the saved list.
+    pub drag_account: Option<String>,
 
     pub inventory: Option<InventorySnapshot>,
     pub grouped: Vec<crate::inventory::GroupedItem>,
@@ -79,6 +84,11 @@ pub struct CasemoveApp {
     pub price_cache: pricing::LiveCache,
     pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
+    /// Filters/sort for the open storage unit's contents, kept apart from
+    /// the inventory view so the two do not overwrite each other.
+    pub storage_view: inventory_view::InventoryViewState,
+    pub storage_grouped: Vec<crate::inventory::GroupedItem>,
+    pub storage_majors: Vec<String>,
 }
 
 impl CasemoveApp {
@@ -97,6 +107,17 @@ impl CasemoveApp {
             .store_get::<String>("overview.by")
             .and_then(|value| overview_view::OverviewBy::from_store(&value))
             .unwrap_or_default();
+        let sidebar_width = core
+            .store_get::<f32>("ui.sidebar")
+            .unwrap_or(216.0)
+            .clamp(184.0, 320.0);
+        let (inventory_open, overview_open) =
+            match core.store_get::<String>("ui.view").as_deref() {
+                Some("inventory") => (true, false),
+                Some("overview") => (false, true),
+                _ => (false, false),
+            };
+        let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
         let mut app = Self {
             core,
             rt,
@@ -122,9 +143,12 @@ impl CasemoveApp {
             account_order_busy: false,
             pending_removal: None,
             removing: false,
-            inventory_open: false,
-            overview_open: false,
+            inventory_open,
+            overview_open,
             overview_by,
+            sidebar_width,
+            saved_page,
+            drag_account: None,
             inventory: None,
             grouped: Vec::new(),
             majors: Vec::new(),
@@ -140,7 +164,13 @@ impl CasemoveApp {
             storage_aggregate_error: String::new(),
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
-            view: inventory_view::InventoryViewState::default(),
+            view: inventory_view::InventoryViewState {
+                page: saved_page,
+                ..Default::default()
+            },
+            storage_view: inventory_view::InventoryViewState::default(),
+            storage_grouped: Vec::new(),
+            storage_majors: Vec::new(),
         };
         app.initial_load();
         app
@@ -153,6 +183,17 @@ impl CasemoveApp {
             let accounts = core.store_get_accounts();
             let session = core.steam_session();
             reply.send(Message::Initial { accounts, session });
+        });
+        // Live schema and image catalog refresh in the background; the
+        // bundled copies stay in place until each one succeeds.
+        let schema_core = self.core.clone();
+        self.rt.spawn(async move {
+            schema_core.refresh_schema().await;
+        });
+        let catalog_reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let catalog = app_core::fetch_image_catalog().await;
+            catalog_reply.send(Message::ImageCatalog(catalog));
         });
     }
 
@@ -272,7 +313,18 @@ impl CasemoveApp {
                 {
                     match result {
                         Ok(items) => {
+                            self.storage_grouped =
+                                crate::inventory::group_items(items.clone());
+                            let mut majors: Vec<String> = self
+                                .storage_grouped
+                                .iter()
+                                .filter_map(|row| row.representative.major.clone())
+                                .collect();
+                            majors.sort();
+                            majors.dedup();
+                            self.storage_majors = majors;
                             self.storage_contents = Some(items);
+                            self.storage_view = inventory_view::InventoryViewState::default();
                             self.refresh_live_prices(false);
                         }
                         Err(error) => self.storage_error = error,
@@ -305,6 +357,7 @@ impl CasemoveApp {
                     }
                 }
             }
+            Message::ImageCatalog(catalog) => self.images.set_catalog(catalog),
             Message::Image { url, result } => self.images.insert(ctx, url, result),
         }
     }
@@ -387,6 +440,9 @@ impl CasemoveApp {
                 reprice(item, &self.price_cache);
             }
         }
+        for row in &mut self.storage_grouped {
+            reprice(&mut row.representative, &self.price_cache);
+        }
     }
 
     /// Fetches every storage unit's contents (legacy's overview Load button).
@@ -430,6 +486,38 @@ impl CasemoveApp {
         let value = self.overview_by.as_str().to_owned();
         drop(self.rt.spawn_blocking(move || {
             let _ = core.store_set("overview.by", value);
+        }));
+    }
+
+    /// Persists which page was last open (`overview` / `inventory`).
+    pub fn save_view(&self, value: &'static str) {
+        let core = self.core.clone();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.view", value);
+        }));
+    }
+
+    /// Persists the inventory table's page.
+    pub fn save_page(&self) {
+        let core = self.core.clone();
+        let page = self.view.page;
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.page", page);
+        }));
+    }
+
+    /// Persists the sidebar width once the user stops dragging it.
+    pub fn persist_sidebar_width(&mut self, width: f32, ctx: &egui::Context) {
+        if width < 50.0 || (width - self.sidebar_width).abs() < 0.5 {
+            return;
+        }
+        if ctx.input(|input| input.pointer.any_down()) {
+            return;
+        }
+        self.sidebar_width = width;
+        let core = self.core.clone();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.sidebar", width);
         }));
     }
 
@@ -601,6 +689,8 @@ impl CasemoveApp {
         self.inventory_busy = false;
         self.storage_selection = None;
         self.storage_contents = None;
+        self.storage_grouped.clear();
+        self.storage_majors.clear();
         self.storage_busy = false;
         self.storage_error.clear();
         self.session_busy = true;
@@ -663,6 +753,8 @@ impl CasemoveApp {
         self.storage_attempt += 1;
         self.storage_selection = None;
         self.storage_contents = None;
+        self.storage_grouped.clear();
+        self.storage_majors.clear();
         self.storage_busy = false;
         self.storage_error.clear();
     }
@@ -700,34 +792,45 @@ impl eframe::App for CasemoveApp {
             self.handle(ctx, message);
         }
 
-        egui::SidePanel::left("sidebar")
-            .resizable(false)
-            .exact_width(256.0)
+        egui::TopBottomPanel::bottom("status_bar")
+            .exact_height(24.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR)),
+            )
+            .show(ctx, |ui| self.status_bar(ui));
+
+        let sidebar = egui::SidePanel::left("sidebar")
+            .resizable(true)
+            .default_width(self.sidebar_width)
+            .width_range(184.0..=320.0)
             .frame(
                 egui::Frame::NONE
                     .fill(theme::SURFACE)
                     .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
                     .inner_margin(egui::Margin {
-                        left: 16,
-                        right: 16,
-                        top: 28,
-                        bottom: 20,
+                        left: 14,
+                        right: 14,
+                        top: 18,
+                        bottom: 14,
                     }),
             )
             .show(ctx, |ui| self.sidebar(ui));
+        self.persist_sidebar_width(sidebar.response.rect.width(), ctx);
 
         if !self.inventory_open && !self.overview_open {
             egui::SidePanel::right("saved-accounts")
                 .resizable(false)
-                .exact_width(288.0)
+                .exact_width(272.0)
                 .frame(
                     egui::Frame::NONE
                         .fill(theme::SURFACE)
                         .inner_margin(egui::Margin {
-                            left: 16,
-                            right: 16,
-                            top: 40,
-                            bottom: 40,
+                            left: 12,
+                            right: 12,
+                            top: 20,
+                            bottom: 16,
                         }),
                 )
                 .show(ctx, |ui| self.accounts_panel(ui));
@@ -756,12 +859,12 @@ impl CasemoveApp {
         ui.horizontal(|ui| {
             if let Some(brand) = &self.brand {
                 ui.add(
-                    egui::Image::new((brand.id(), egui::vec2(36.0, 36.0)))
-                        .fit_to_exact_size(egui::vec2(36.0, 36.0)),
+                    egui::Image::new((brand.id(), egui::vec2(28.0, 28.0)))
+                        .fit_to_exact_size(egui::vec2(28.0, 28.0)),
                 );
             }
             let label = ui.add(
-                egui::Label::new(egui::RichText::new("casemove").size(28.0).strong())
+                egui::Label::new(egui::RichText::new("casemove").size(20.0).strong())
                     .sense(egui::Sense::click()),
             );
             if label.clicked() {
@@ -769,84 +872,141 @@ impl CasemoveApp {
                 self.overview_open = false;
             }
         });
-        ui.add_space(30.0);
+        ui.add_space(16.0);
 
         ui.horizontal(|ui| {
             let avatar_url = self
                 .profile
                 .as_ref()
                 .and_then(|profile| profile.avatar_url.clone());
-            images::avatar(ui, &mut self.images, avatar_url.as_deref(), 40.0);
+            images::avatar(ui, &mut self.images, avatar_url.as_deref(), 32.0);
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new(profile_display_name(self.profile.clone())).size(14.0),
+                    egui::RichText::new(profile_display_name(self.profile.clone())).size(13.0),
                 );
                 let (status, color) = if self.profile.is_some() {
                     ("Signed in to Steam", theme::GREEN)
                 } else {
                     ("Not connected", theme::ERROR_STRONG)
                 };
-                ui.label(egui::RichText::new(status).size(12.0).color(color));
+                ui.label(egui::RichText::new(status).size(11.0).color(color));
                 let balance = wallet_balance(self.wallet.clone());
                 if !balance.is_empty() {
-                    ui.label(egui::RichText::new(balance).size(12.0));
+                    ui.label(egui::RichText::new(balance).size(11.0));
                 }
             });
         });
-        ui.add_space(26.0);
+        ui.add_space(16.0);
 
-        let nav: [(&str, &str); 4] = [
+        let nav: [(&str, &str); 2] = [
             ("Overview", egui_phosphor::regular::CHART_LINE),
-            ("Transfer | From", egui_phosphor::regular::DOWNLOAD),
-            ("Transfer | To", egui_phosphor::regular::UPLOAD),
             ("Inventory", egui_phosphor::regular::ARCHIVE),
         ];
+        let width = ui.available_width();
         for (name, glyph) in nav {
-            let is_inventory = name == "Inventory";
             let is_overview = name == "Overview";
-            let is_page = is_inventory || is_overview;
-            let enabled = is_page && self.profile.is_some() && !self.session_busy;
+            let is_inventory = !is_overview;
+            let enabled = self.profile.is_some() && !self.session_busy;
             let current = if is_overview {
                 self.overview_open
-            } else if is_inventory {
-                self.inventory_open && !self.overview_open
             } else {
-                false
+                self.inventory_open && !self.overview_open
             };
             let label = format!("{glyph}  {name}");
             let response = ui
-                .add_enabled_ui(enabled, |ui| ui.selectable_label(current, label))
+                .add_enabled_ui(enabled, |ui| {
+                    ui.add_sized(
+                        egui::vec2(width, 30.0),
+                        egui::Button::selectable(current, label),
+                    )
+                })
                 .inner;
             if response.clicked() {
                 self.overview_open = is_overview;
                 self.inventory_open = is_inventory;
+                self.save_view(if is_overview { "overview" } else { "inventory" });
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {
                     "Sign in to Steam first"
-                } else if is_page {
-                    "Waiting for the Steam session"
                 } else {
-                    "This page has not been ported yet"
+                    "Waiting for the Steam session"
                 };
                 response.on_hover_text(tip);
             }
         }
 
-        ui.add_space((ui.available_height() - 52.0).max(0.0));
+        ui.add_space((ui.available_height() - 40.0).max(0.0));
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(egui_phosphor::regular::SHIELD_CHECK)
-                    .size(22.0)
+                    .size(18.0)
                     .color(theme::MUTED),
             );
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("Casemove")
-                        .size(13.0)
+                        .size(12.0)
                         .color(theme::MUTED),
                 );
-                ui.label(egui::RichText::new("v0.1.0").size(11.0).color(theme::MUTED));
+                ui.label(egui::RichText::new("v0.1.0").size(10.0).color(theme::MUTED));
+            });
+        });
+    }
+
+    // --- status strip -------------------------------------------------------
+
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let mut first = true;
+        let mut segment = |ui: &mut egui::Ui, text: &str, color: egui::Color32| {
+            if !first {
+                ui.label(egui::RichText::new("·").size(11.0).color(theme::BORDER));
+            }
+            first = false;
+            ui.label(egui::RichText::new(text).size(11.0).color(color));
+        };
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+
+            let (session, color) = if self.session_busy {
+                ("Connecting…", theme::STATUS_TEXT)
+            } else if self.profile.is_some() {
+                ("Steam connected", theme::GREEN)
+            } else {
+                ("Steam not connected", theme::ERROR_STRONG)
+            };
+            segment(ui, session, color);
+
+            let inventory = if self.inventory_busy {
+                "Inventory loading…".to_owned()
+            } else {
+                self.inventory
+                    .as_ref()
+                    .map(|snapshot| format!("Inventory: {} items", snapshot.items.len()))
+                    .unwrap_or_else(|| "Inventory: not loaded".to_owned())
+            };
+            segment(ui, &inventory, theme::STATUS_TEXT);
+
+            if self.prices_busy {
+                segment(ui, "Prices updating…", theme::STATUS_TEXT);
+            }
+            if let Some(items) = &self.storage_aggregate {
+                segment(ui, &format!("Storage: {} items", items.len()), theme::STATUS_TEXT);
+            }
+            if let Some(selection) = &self.storage_selection {
+                segment(ui, &format!("Unit: {}", selection.1), theme::STATUS_TEXT);
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let balance = wallet_balance(self.wallet.clone());
+                if !balance.is_empty() {
+                    ui.label(
+                        egui::RichText::new(balance)
+                            .size(11.0)
+                            .color(theme::GREEN),
+                    );
+                }
             });
         });
     }
@@ -854,53 +1014,59 @@ impl CasemoveApp {
     // --- saved accounts ---------------------------------------------------
 
     fn accounts_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            egui::RichText::new("SAVED ACCOUNTS")
-                .size(12.0)
-                .strong()
-                .color(theme::MUTED),
-        );
-        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("SAVED ACCOUNTS")
+                    .size(11.0)
+                    .strong()
+                    .color(theme::MUTED),
+            );
+            if !self.accounts.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("· {}", self.accounts.len()))
+                        .size(11.0)
+                        .color(theme::MUTED),
+                );
+            }
+        });
+        ui.add_space(8.0);
 
         if self.loading {
-            ui.label(egui::RichText::new("Loading accounts...").color(theme::MUTED));
+            ui.label(
+                egui::RichText::new("Loading accounts...")
+                    .size(11.0)
+                    .color(theme::MUTED),
+            );
         }
         if !self.account_error.is_empty() {
             ui.label(
                 egui::RichText::new(&self.account_error)
-                    .size(12.0)
+                    .size(11.0)
                     .color(theme::ERROR),
             );
         }
         if !self.loading && self.accounts.is_empty() {
             egui::Frame::NONE
                 .fill(theme::RAISED)
-                .corner_radius(8)
+                .corner_radius(6)
                 .stroke(egui::Stroke::new(
                     1.0_f32,
                     egui::Color32::from_rgb(0x65, 0x65, 0x65),
                 ))
-                .inner_margin(egui::Margin::symmetric(14, 18))
+                .inner_margin(egui::Margin::symmetric(12, 14))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        images::media_box(
-                            ui,
-                            &mut self.images,
-                            None,
-                            egui::vec2(40.0, 40.0),
-                            egui::CornerRadius::same(20),
-                            egui_phosphor::regular::USER,
-                            22.0,
-                            theme::ICON,
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::USER)
+                                .size(20.0)
+                                .color(theme::ICON),
                         );
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Nothing here").strong().size(13.0));
-                            ui.label(
-                                egui::RichText::new("No saved accounts")
-                                    .size(12.0)
-                                    .color(theme::MUTED),
-                            );
-                        });
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("No saved accounts")
+                                .size(12.0)
+                                .color(theme::MUTED),
+                        );
                     });
                 });
         }
@@ -918,100 +1084,135 @@ impl CasemoveApp {
             .enumerate()
             .map(|(index, account)| (index, account.clone()))
             .collect();
+        let pointer = ui.ctx().input(|input| input.pointer.latest_pos());
+        let mut rects: Vec<(usize, egui::Rect)> = Vec::new();
+        let mut dropped: Option<String> = None;
+
         for (index, account) in accounts {
             let enabled = !self.login_busy && !self.session_busy && self.profile.is_none();
-            let frame = egui::Frame::NONE
-                .fill(theme::RAISED)
-                .corner_radius(8)
-                .stroke(egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_rgb(0x65, 0x65, 0x65),
-                ))
-                .inner_margin(egui::Margin::symmetric(14, 18));
-            frame.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    images::avatar(ui, &mut self.images, account.image_url.as_deref(), 32.0);
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 44.0),
+                egui::Sense::click_and_drag(),
+            );
+            rects.push((index, rect));
+
+            let hovered = pointer.is_some_and(|position| rect.contains(position));
+            let drop_target = self.drag_account.is_some() && hovered;
+            if drop_target {
+                ui.painter().rect_filled(
+                    rect,
+                    6,
+                    egui::Color32::from_rgba_unmultiplied(0x4f, 0x46, 0xe5, 70),
+                );
+            } else if hovered {
+                ui.painter().rect_filled(rect, 6, theme::RAISED);
+            } else if self.drag_account.as_ref() == Some(&account.username) {
+                ui.painter().rect_filled(
+                    rect,
+                    6,
+                    egui::Color32::from_rgba_unmultiplied(0x4f, 0x46, 0xe5, 40),
+                );
+            }
+
+            if response.drag_started() {
+                self.drag_account = Some(account.username.clone());
+            }
+            if response.drag_stopped() && self.drag_account.is_some() {
+                dropped = Some(account.username.clone());
+            }
+            if enabled && response.clicked() {
+                action = Some(Action::Select(account.username.clone()));
+            }
+            if response.hovered() && self.drag_account.is_none() {
+                response
+                    .ctx
+                    .set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.horizontal_centered(|ui| {
+                    images::avatar(ui, &mut self.images, account.image_url.as_deref(), 28.0);
+                    ui.add_space(8.0);
+                    // Reserve the action area up front so a long name cannot
+                    // push the buttons out of the row.
+                    let actions = if hovered { 62.0 } else { 0.0 };
+                    let name_width = (rect.width() - 40.0 - actions).max(48.0);
                     ui.vertical(|ui| {
-                        let name = ui.add(
+                        ui.add_sized(
+                            egui::vec2(name_width, 16.0),
                             egui::Label::new(
-                                egui::RichText::new(&account.display_name)
-                                    .strong()
-                                    .size(13.0),
+                                egui::RichText::new(&account.display_name).strong().size(12.0),
                             )
-                            .sense(egui::Sense::click()),
+                            .truncate(),
                         );
-                        let user = ui.add(
+                        ui.add_sized(
+                            egui::vec2(name_width, 14.0),
                             egui::Label::new(
                                 egui::RichText::new(&account.username)
-                                    .size(12.0)
+                                    .size(11.0)
                                     .color(theme::MUTED),
                             )
-                            .sense(egui::Sense::click()),
+                            .truncate(),
                         );
-                        if enabled && (name.clicked() || user.clicked()) {
-                            action = Some(Action::Select(account.username.clone()));
-                        }
-                        if name.hovered() || user.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                !self.login_busy && !self.session_busy,
-                                egui::Button::new(egui::RichText::new(
-                                    egui_phosphor::regular::TRASH,
-                                )),
-                            )
-                            .on_hover_text("Remove saved account")
-                            .clicked()
-                        {
-                            action = Some(Action::Remove(account.username.clone()));
-                        }
-                        if account.has_saved_login
-                            && ui
-                                .add_enabled(
-                                    enabled,
-                                    egui::Button::new(egui::RichText::new(
-                                        egui_phosphor::regular::SIGN_IN,
-                                    )),
-                                )
-                                .on_hover_text(format!("Sign in as {}", account.display_name))
-                                .clicked()
-                        {
-                            action = Some(Action::Login(account.username.clone()));
-                        }
-                        ui.vertical(|ui| {
-                            let up = ui
-                                .add_enabled(
-                                    !self.account_order_busy && index > 0,
-                                    egui::Button::new(egui::RichText::new(
-                                        egui_phosphor::regular::ARROW_UP,
-                                    )),
-                                )
-                                .on_hover_text("Move account up");
-                            let down = ui
-                                .add_enabled(
-                                    !self.account_order_busy && index + 1 < self.accounts.len(),
-                                    egui::Button::new(egui::RichText::new(
-                                        egui_phosphor::regular::ARROW_DOWN,
-                                    )),
-                                )
-                                .on_hover_text("Move account down");
-                            if up.clicked() {
-                                action = Some(Action::Move(
-                                    account.username.clone(),
-                                    index.saturating_sub(1),
-                                ));
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            if hovered {
+                                if ui
+                                    .add_enabled(
+                                        !self.login_busy && !self.session_busy,
+                                        egui::Button::new(egui::RichText::new(
+                                            egui_phosphor::regular::TRASH,
+                                        )),
+                                    )
+                                    .on_hover_text("Remove saved account")
+                                    .clicked()
+                                {
+                                    action = Some(Action::Remove(account.username.clone()));
+                                }
+                                if account.has_saved_login
+                                    && ui
+                                        .add_enabled(
+                                            enabled,
+                                            egui::Button::new(egui::RichText::new(
+                                                egui_phosphor::regular::SIGN_IN,
+                                            )),
+                                        )
+                                        .on_hover_text(format!(
+                                            "Sign in as {}",
+                                            account.display_name
+                                        ))
+                                        .clicked()
+                                {
+                                    action = Some(Action::Login(account.username.clone()));
+                                }
                             }
-                            if down.clicked() {
-                                action = Some(Action::Move(account.username.clone(), index + 1));
-                            }
-                        });
-                    });
+                        },
+                    );
                 });
             });
-            ui.add_space(10.0);
+        }
+
+        if let Some(username) = dropped {
+            self.drag_account = None;
+            let target = pointer
+                .and_then(|position| {
+                    rects
+                        .iter()
+                        .find(|(_, rect)| rect.contains(position))
+                        .map(|(index, _)| *index)
+                })
+                .filter(|target| {
+                    self.accounts
+                        .iter()
+                        .position(|account| account.username == username)
+                        .is_some_and(|current| current != *target)
+                });
+            if let Some(target) = target {
+                action = Some(Action::Move(username, target));
+            }
         }
 
         match action {

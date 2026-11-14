@@ -3,11 +3,13 @@
 //! in `src-tauri/`; see docs/COMMANDS.md for the contract these names come from.
 
 mod accounts;
+mod catalog;
 mod inventory;
 mod prices;
 mod session;
 
 pub use accounts::initialize_store;
+pub use catalog::fetch_image_catalog;
 pub use inventory::InventoryState;
 pub use prices::fetch_live_prices;
 
@@ -15,7 +17,7 @@ use app_commands::{SteamProfile, WalletInfo};
 use item_schema::ItemSchema;
 use settings::SettingsStore;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use steam_core::{SessionManager, SteamClient};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -56,7 +58,8 @@ pub struct Core {
     pub profile: Arc<Mutex<Option<SteamProfile>>>,
     pub inventory: Arc<InventoryState>,
     pub store: Arc<Mutex<SettingsStore>>,
-    pub schema: Arc<ItemSchema>,
+    /// Shared so the live schema refresh can swap it after startup.
+    pub schema: Arc<RwLock<ItemSchema>>,
     pub events: EventSink,
 }
 
@@ -79,9 +82,27 @@ impl Core {
             profile: Arc::new(Mutex::new(None)),
             inventory: Arc::new(InventoryState::default()),
             store: Arc::new(Mutex::new(store)),
-            schema: Arc::new(schema),
+            schema: Arc::new(RwLock::new(schema)),
             events,
         })
+    }
+
+    /// Replaces the bundled schema with the live skinledger dump (legacy's
+    /// `updateItems`/`getTranslations`). Any failure keeps the bundled
+    /// schema — the fallback is the behavior.
+    pub async fn refresh_schema(&self) {
+        let Some((items, english)) = fetch_schema_files().await else {
+            return;
+        };
+        let parsed = tokio::task::spawn_blocking(move || ItemSchema::from_vdf(&items, &english))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        if let Some(schema) = parsed
+            && let Ok(mut slot) = self.schema.write()
+        {
+            *slot = schema;
+        }
     }
 
     /// Generic dot-path setting read (e.g. `overview.by`).
@@ -99,6 +120,33 @@ impl Core {
             .set(key, value)
             .map_err(|error| format!("Could not save the setting: {error}"))
     }
+}
+
+/// Legacy's live schema sources (`itemsLink`/`translationsLink`).
+const SCHEMA_ITEMS_URL: &str = "https://files.skinledger.com/counterstrike/items_game.txt";
+const SCHEMA_TRANSLATIONS_URL: &str = "https://files.skinledger.com/counterstrike/csgo_english.txt";
+
+async fn fetch_schema_files() -> Option<(String, String)> {
+    let items = fetch_text(SCHEMA_ITEMS_URL).await?;
+    let english = fetch_text(SCHEMA_TRANSLATIONS_URL).await?;
+    Some((items, english))
+}
+
+async fn fetch_text(url: &str) -> Option<String> {
+    let request = async {
+        reqwest::get(url)
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .text()
+            .await
+            .ok()
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), request)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn home_dir() -> PathBuf {
@@ -133,5 +181,20 @@ pub fn config_dir() -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir().join(".config"));
         base.join("com.nombers.casemove")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "downloads the live schema (~10 MB)"]
+    async fn live_skinledger_files_parse_into_a_usable_schema() {
+        let (items, english) = fetch_schema_files().await.expect("skinledger reachable");
+        let schema = ItemSchema::from_vdf(&items, &english).expect("live VDF parses");
+        assert_eq!(schema.describe(7, None).name, "AK-47");
+        assert!(schema.describe(7, None).image_path.is_some());
+        assert!(schema.music_image(1).is_some() || schema.music_image(3).is_some());
     }
 }

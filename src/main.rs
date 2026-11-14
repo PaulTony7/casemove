@@ -24,7 +24,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Casemove")
         .with_inner_size([1124.0, 850.0])
-        .with_min_inner_size([1030.0, 800.0]);
+        .with_min_inner_size([960.0, 620.0]);
     if let Some(icon) = icons::window_icon() {
         viewport = viewport.with_icon(icon);
     }

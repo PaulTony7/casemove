@@ -78,6 +78,19 @@ fn attribute_integer(item: &EconItem, index: u32) -> Option<u32> {
     (value >= 0.0 && value < u32::MAX as f32 && value.fract() == 0.0).then_some(value as u32)
 }
 
+/// Attribute values legacy reads as raw little-endian u32 (the storage-unit
+/// icon index, attribute 70).
+fn attribute_raw_u32(item: &EconItem, index: u32) -> Option<u32> {
+    let value = &item
+        .attributes
+        .iter()
+        .find(|attribute| attribute.definition_index == index)?
+        .value;
+    <[u8; 4]>::try_from(value.as_slice())
+        .ok()
+        .map(u32::from_le_bytes)
+}
+
 /// Legacy converter drops items stored inside storage units and two
 /// placeholder IDs, in every conversion path.
 const EXCLUDED_ITEM_IDS: [u64; 2] = [17293822569110896676, 17293822569102708641];
@@ -169,10 +182,19 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     }
     let position = item.legacy_position();
     let wear_name = wear.map(|wear| wear_name(wear).to_owned());
+    // Legacy `itemProcessorImageUrl`: music kits and storage-unit icons
+    // override the definition's image path.
+    let image_path = match item.music_index {
+        Some(music) => schema.music_image(music),
+        None if item.definition_index == 1201 => {
+            attribute_raw_u32(&item, 70).and_then(|icon| schema.casket_icon(icon))
+        }
+        None => None,
+    }
+    .or(description.image_path);
     // Category from the econ path (legacy matched `item_url`), major from the
     // final display name exactly like legacy's post-prefix `getCategory`.
-    let category = description
-        .image_path
+    let category = image_path
         .as_deref()
         .or(description.image_url.as_deref())
         .and_then(domain::classify_category)
@@ -183,8 +205,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
     let trade_unlock = trade_unlock_ms(&name, item.tradeable_after_secs, now_ms);
-    let item_url = description
-        .image_path
+    let item_url = image_path
         .as_deref()
         .or(description.image_url.as_deref())
         .unwrap_or_default();
@@ -222,6 +243,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         name,
         custom_name: item.custom_name,
         image_url: description.image_url,
+        image_path,
         quantity: item.quantity,
         rarity: item.rarity,
         position,
@@ -305,7 +327,7 @@ impl Core {
     pub async fn refresh_inventory(&self) -> Result<InventorySnapshot, String> {
         let session = &*self.session;
         let inventory = &*self.inventory;
-        let schema = &*self.schema;
+        let schema = &self.schema;
         session
             .with_connection(|connection, generation| async move {
                 let mut state = inventory
@@ -355,7 +377,10 @@ impl Core {
                         })?;
                     items
                 };
-                let rows = to_rows(items, schema, false)?;
+                let schema = schema
+                    .read()
+                    .map_err(|_| "The item schema is unavailable.".to_owned())?;
+                let rows = to_rows(items, &schema, false)?;
                 Ok(InventorySnapshot {
                     steam_id: connection.steam_id(),
                     items: rows,
@@ -369,7 +394,7 @@ impl Core {
         let casket_id = parse_storage_id(&casket_id)?;
         let session = &*self.session;
         let inventory = &*self.inventory;
-        let schema = &*self.schema;
+        let schema = &self.schema;
         session
             .with_connection(|_connection, generation| async move {
                 let state = inventory.0.try_lock().map_err(|_| {
@@ -388,7 +413,10 @@ impl Core {
                     .storage_contents(casket_id, expected_count)
                     .await
                     .map_err(storage_contents_error)?;
-                to_rows(items, schema, true)
+                let schema = schema
+                    .read()
+                    .map_err(|_| "The item schema is unavailable.".to_owned())?;
+                to_rows(items, &schema, true)
             })
             .await
             .map_err(|error| error.to_string())?
@@ -535,6 +563,41 @@ mod tests {
             value: 7u32.to_le_bytes().to_vec(),
         }];
         assert_eq!(enrich_item(plain, &schema).storage_item_count, None);
+    }
+
+    #[test]
+    fn image_paths_follow_the_legacy_music_and_casket_overrides() {
+        let schema = ItemSchema::from_json(
+            r#"{"items":{"7":{"name":"weapon_ak47"}},"music_kits":{"3":{"image_inventory":"econ/music_kits/noisia_01"}},"casket_icons":{"5":{"icon_path":"econ/tools/casket"}}}"#,
+            "{}",
+        )
+        .unwrap();
+
+        // Base weapon without image_inventory → legacy base-weapon path.
+        assert_eq!(
+            enrich_item(item(), &schema).image_path.as_deref(),
+            Some("econ/weapons/base_weapons/weapon_ak47")
+        );
+
+        // Attribute 166 (music index) overrides with the kit's own image.
+        let mut music = item();
+        music.music_index = Some(3);
+        assert_eq!(
+            enrich_item(music, &schema).image_path.as_deref(),
+            Some("econ/music_kits/noisia_01")
+        );
+
+        // Attribute 70 (raw u32) on a storage unit picks the casket icon.
+        let mut casket = item();
+        casket.definition_index = 1201;
+        casket.attributes.push(ItemAttribute {
+            definition_index: 70,
+            value: 5u32.to_le_bytes().to_vec(),
+        });
+        assert_eq!(
+            enrich_item(casket, &schema).image_path.as_deref(),
+            Some("econ/tools/casket")
+        );
     }
 
     #[test]

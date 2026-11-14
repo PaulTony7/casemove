@@ -16,6 +16,14 @@ pub const ICON: egui::Color32 = egui::Color32::from_rgb(0xc5, 0xc6, 0xca);
 pub const CHIP_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0x3b, 0x82, 0xf6);
 pub const DANGER: egui::Color32 = egui::Color32::from_rgb(0xb9, 0x1c, 0x1c);
 
+// Density tokens: one place to tune how much fits on screen.
+pub const PAGE_MARGIN: i8 = 16;
+pub const TITLE_SIZE: f32 = 20.0;
+pub const BODY_SIZE: f32 = 12.0;
+pub const MUTED_SIZE: f32 = 11.0;
+pub const ROW_HEIGHT: f32 = 48.0;
+pub const HEADER_HEIGHT: f32 = 24.0;
+
 pub fn rarity_color(rarity: u32) -> egui::Color32 {
     match rarity {
         2 => egui::Color32::from_rgb(0x8d, 0xb4, 0xd5),
@@ -66,6 +74,6 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
     ctx.set_style(style);
 }

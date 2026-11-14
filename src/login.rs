@@ -8,28 +8,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         .id_salt("login-scroll")
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(96.0);
+                ui.add_space(32.0);
                 ui.set_max_width(384.0);
-                ui.label(egui::RichText::new("STEAM").size(30.0).strong());
-                ui.add_space(24.0);
+                ui.label(egui::RichText::new("STEAM").size(22.0).strong());
+                ui.add_space(16.0);
                 if app.profile.is_some() {
                     session_details(ui, app);
                 } else {
                     login_form(ui, app);
                 }
-                ui.add_space(64.0);
+                ui.add_space(32.0);
             });
         });
 }
 
 fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
-    ui.add_space(32.0);
+    ui.add_space(16.0);
     let avatar_url = app
         .profile
         .as_ref()
         .and_then(|profile| profile.avatar_url.clone());
     images::avatar(ui, &mut app.images, avatar_url.as_deref(), 40.0);
-    ui.add_space(12.0);
+    ui.add_space(8.0);
     ui.label(
         egui::RichText::new(profile_display_name(app.profile.clone()))
             .strong()
@@ -45,7 +45,7 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
     let balance = wallet_balance(app.wallet.clone());
     if !balance.is_empty() {
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         ui.label(egui::RichText::new(balance).size(13.0));
     }
     if !app.login_error.is_empty() {
@@ -55,18 +55,19 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
                 .color(theme::ERROR),
         );
     }
-    ui.add_space(24.0);
+    ui.add_space(16.0);
     let width = ui.available_width();
     let open_inventory = egui::Button::new(
         egui::RichText::new(format!("{}  Inventory", egui_phosphor::regular::ARCHIVE))
             .color(egui::Color32::WHITE),
     )
     .fill(theme::ACCENT)
-    .min_size(egui::vec2(width, 40.0));
+    .min_size(egui::vec2(width, 36.0));
     if ui.add_enabled(!app.session_busy, open_inventory).clicked() {
         app.inventory_open = true;
+        app.save_view("inventory");
     }
-    ui.add_space(12.0);
+    ui.add_space(8.0);
     let sign_out = egui::Button::new(format!(
         "{}  {}",
         egui_phosphor::regular::SIGN_OUT,
@@ -76,7 +77,7 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             "Sign out"
         }
     ))
-    .min_size(egui::vec2(width, 38.0));
+    .min_size(egui::vec2(width, 34.0));
     if ui.add_enabled(!app.session_busy, sign_out).clicked() {
         app.sign_out();
     }
@@ -115,14 +116,14 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         app.switch_method(method);
     }
 
-    ui.add_space(20.0);
+    ui.add_space(14.0);
     let heading = match app.method {
         LoginMethod::Regular => "Connect to Steam",
         LoginMethod::Qr => "Scan QR Code",
         LoginMethod::WebToken => "Connect from browser",
     };
-    ui.label(egui::RichText::new(heading).size(28.0).strong());
-    ui.add_space(22.0);
+    ui.label(egui::RichText::new(heading).size(20.0).strong());
+    ui.add_space(14.0);
 
     let busy = app.login_busy || app.session_busy;
     let mut submit = false;
@@ -135,17 +136,17 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         app.submit_login();
     }
 
-    ui.add_space(22.0);
+    ui.add_space(14.0);
     status_line(ui, app);
     if !app.login_error.is_empty() {
-        ui.add_space(10.0);
+        ui.add_space(8.0);
         ui.label(
             egui::RichText::new(&app.login_error)
                 .size(12.0)
                 .color(theme::ERROR),
         );
     }
-    ui.add_space(16.0);
+    ui.add_space(12.0);
 
     let width = ui.available_width();
     let text = if app.login_busy {
@@ -160,15 +161,15 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             .color(egui::Color32::WHITE),
     )
     .fill(theme::ACCENT)
-    .min_size(egui::vec2(width, 40.0));
+    .min_size(egui::vec2(width, 36.0));
     let can_submit = !app.loading && !app.login_busy && !app.session_busy;
     if ui.add_enabled(can_submit, sign_in).clicked() {
         app.submit_login();
     }
 
     if app.login_busy {
-        ui.add_space(12.0);
-        let cancel = egui::Button::new("Cancel login").min_size(egui::vec2(width, 38.0));
+        ui.add_space(8.0);
+        let cancel = egui::Button::new("Cancel login").min_size(egui::vec2(width, 34.0));
         if ui.add_enabled(!app.session_busy, cancel).clicked() {
             app.sign_out();
         }
@@ -177,7 +178,7 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 
 fn regular_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool, submit: &mut bool) {
     ui.add_enabled_ui(!busy, |ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.spacing_mut().item_spacing.y = 3.0;
         let username = ui.add(
             egui::TextEdit::singleline(&mut app.form.username)
                 .hint_text("Username")
@@ -208,7 +209,7 @@ fn regular_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool, submit: 
                     .desired_width(f32::INFINITY),
             );
         }
-        ui.add_space(16.0);
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.checkbox(&mut app.form.remember, "Remember for later");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -281,7 +282,7 @@ fn qr_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool) {
             .inner_margin(16.0)
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(203.0, 203.0));
-                ui.add_space(44.0);
+                ui.add_space(28.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(egui_phosphor::regular::QR_CODE)
@@ -305,7 +306,7 @@ fn qr_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool) {
                 .color(theme::ERROR),
         );
     }
-    ui.add_space(12.0);
+    ui.add_space(8.0);
     ui.add_enabled_ui(!busy, |ui| {
         ui.checkbox(&mut app.form.qr_remember, "Remember for later");
     });
