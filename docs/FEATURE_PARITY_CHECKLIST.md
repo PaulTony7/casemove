@@ -60,7 +60,8 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Storage-unit-only filter and 50-row inventory pagination.
 - [x] Refresh errors preserve the last displayed snapshot.
 - [ ] Incremental SO-cache create/update/remove handling and automatic UI updates.
-- [ ] Group equivalent items, retain their individual IDs, and show combined quantities.
+- [x] Group equivalent items, retain their individual IDs, and show combined quantities (legacy `combineInventory` key: name, nametag, image URL, wear name, exact float).
+- [x] Quantity sort (descending over combined quantities, normalized-name tie-break).
 - [ ] Category and subcategory classification/filtering.
 - [ ] Rarity-selection and item-property filters, including tradehold and stickers.
 - [ ] Quantity, price, category, collection, sticker, tradehold, and storage-name sorts.

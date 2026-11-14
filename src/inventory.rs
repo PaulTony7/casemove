@@ -22,30 +22,103 @@ fn normalized_name(name: &str) -> String {
     name.replace('★', "").replace(' ', "")
 }
 
+/// A display row of equivalent items: the first item represents the group,
+/// `combined_ids` retains every member and `combined_qty` is the group size
+/// (legacy `combined_ids` / `combined_QTY`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupedItem {
+    pub representative: InventoryItem,
+    pub combined_ids: Vec<String>,
+    pub combined_qty: usize,
+}
+
+/// Legacy `combineInventory` key: name, custom name, item URL (our resolved
+/// image URL), wear name, and — because this UI always shows the Float
+/// column — the exact paint wear. Trade-unlock/moveable/sticker fields join
+/// the key once those are modeled.
+fn group_key(item: &InventoryItem) -> String {
+    format!(
+        "{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{}",
+        item.name,
+        item.custom_name.as_deref().unwrap_or(""),
+        item.wear_name.as_deref().unwrap_or(""),
+        item.wear,
+        item.image_url.as_deref().unwrap_or("")
+    )
+}
+
+/// Groups equivalent items in first-seen order, like legacy `combineInventory`
+/// (which runs once per inventory ingest, before filtering and sorting).
+fn group_items(items: Vec<InventoryItem>) -> Vec<GroupedItem> {
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut groups: Vec<Vec<InventoryItem>> = Vec::new();
+    for item in items {
+        let key = group_key(&item);
+        match index.get(&key) {
+            Some(&position) => groups[position].push(item),
+            None => {
+                index.insert(key, groups.len());
+                groups.push(vec![item]);
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|members| {
+            let mut members = members.into_iter();
+            let representative = members.next().expect("groups are never empty");
+            let mut combined_ids = Vec::with_capacity(members.len() + 1);
+            combined_ids.push(representative.id.clone());
+            combined_ids.extend(members.map(|item| item.id));
+            let combined_qty = combined_ids.len();
+            GroupedItem {
+                representative,
+                combined_ids,
+                combined_qty,
+            }
+        })
+        .collect()
+}
+
 /// Sort parity with legacy `sortDataFunction`: every mode sits on top of the
 /// star-stripped, space-stripped name comparison (the legacy base sort, which
 /// JS stability turns into the tie-breaker), rarity ascends (missing-first in
-/// legacy ascending order), and wear descends with unknown wear last.
-fn sort_rows(items: &mut [InventoryItem], mode: &str) {
-    fn by_name(left: &InventoryItem, right: &InventoryItem) -> std::cmp::Ordering {
-        normalized_name(&left.name).cmp(&normalized_name(&right.name))
+/// legacy ascending order), wear descends with unknown wear last, and the
+/// quantity sort descends over combined quantities.
+fn sort_rows(items: &mut [GroupedItem], mode: &str) {
+    fn by_name(left: &GroupedItem, right: &GroupedItem) -> std::cmp::Ordering {
+        normalized_name(&left.representative.name)
+            .cmp(&normalized_name(&right.representative.name))
     }
     match mode {
         "name" => items.sort_by(|left, right| {
-            by_name(left, right).then_with(|| left.id.cmp(&right.id))
+            by_name(left, right).then_with(|| left.representative.id.cmp(&right.representative.id))
         }),
         "rarity" => items.sort_by(|left, right| {
-            left.rarity.cmp(&right.rarity).then_with(|| by_name(left, right))
+            left.representative
+                .rarity
+                .cmp(&right.representative.rarity)
+                .then_with(|| by_name(left, right))
         }),
         "wear" => items.sort_by(|left, right| {
             right
+                .representative
                 .wear
                 .unwrap_or(f64::NEG_INFINITY)
-                .total_cmp(&left.wear.unwrap_or(f64::NEG_INFINITY))
+                .total_cmp(&left.representative.wear.unwrap_or(f64::NEG_INFINITY))
+                .then_with(|| by_name(left, right))
+        }),
+        "qty" => items.sort_by(|left, right| {
+            right
+                .combined_qty
+                .cmp(&left.combined_qty)
                 .then_with(|| by_name(left, right))
         }),
         _ => items.sort_by(|left, right| {
-            left.position.cmp(&right.position).then_with(|| by_name(left, right))
+            left.representative
+                .position
+                .cmp(&right.representative.position)
+                .then_with(|| by_name(left, right))
         }),
     }
 }
@@ -53,6 +126,7 @@ fn sort_rows(items: &mut [InventoryItem], mode: &str) {
 #[component]
 fn InventoryRow(
     item: InventoryItem,
+    display_qty: usize,
     on_open_storage: Option<Callback<(String, String)>>,
 ) -> impl IntoView {
     let (image_failed, set_image_failed) = signal(false);
@@ -93,7 +167,7 @@ fn InventoryRow(
                 {item.wear.map(|wear| view! { <small class="wear-value">{format!("{wear:.6}")}</small> })}
             </td>
             <td class="numeric">{item.paint_seed.map(|seed| seed.to_string()).unwrap_or_else(|| "-".into())}</td>
-            <td class="numeric">{item.quantity}</td>
+            <td class="numeric">{display_qty}</td>
             <td class="item-id">{item.id}</td>
             <td>{storage_action}</td>
         </tr>
@@ -118,15 +192,17 @@ pub fn InventoryView(
     let (sort, set_sort) = signal("position".to_owned());
     let (units_only, set_units_only) = signal(false);
     let (page, set_page) = signal(0usize);
+    let grouped = Memo::new(move |_| {
+        group_items(snapshot.get().map(|snapshot| snapshot.items).unwrap_or_default())
+    });
     let filtered = Memo::new(move |_| {
         let query = query.get().trim().to_lowercase();
         let units_only = units_only.get();
-        let mut items: Vec<_> = snapshot
+        let mut rows: Vec<_> = grouped
             .get()
-            .map(|snapshot| snapshot.items)
-            .unwrap_or_default()
             .into_iter()
-            .filter(|item| {
+            .filter(|row| {
+                let item = &row.representative;
                 (!units_only || item.is_storage_unit)
                     && (query.is_empty()
                         || item.name.to_lowercase().contains(&query)
@@ -137,8 +213,8 @@ pub fn InventoryView(
                             .is_some_and(|name| name.to_lowercase().contains(&query)))
             })
             .collect();
-        sort_rows(&mut items, &sort.get());
-        items
+        sort_rows(&mut rows, &sort.get());
+        rows
     });
     let pages = Memo::new(move |_| filtered.with(|items| items.len().div_ceil(PAGE_SIZE).max(1)));
     Effect::new(move |_| {
@@ -190,7 +266,10 @@ pub fn InventoryView(
                             </tr></thead><tbody>
                                 <For each=move || storage_contents.with(|value| value.clone().unwrap_or_default())
                                     key=|item| (item.id.clone(), item.name.clone(), item.custom_name.clone())
-                                    children=move |item| view! { <InventoryRow item=item on_open_storage=None/> }/>
+                                    children=move |item| {
+                                        let display_qty = item.quantity as usize;
+                                        view! { <InventoryRow item=item display_qty=display_qty on_open_storage=None/> }
+                                    }/>
                             </tbody></table>
                         </div>
                     </Show>
@@ -218,6 +297,7 @@ pub fn InventoryView(
                     <select id="inventory-sort" prop:value=move || sort.get() on:change=move |event| set_sort.set(event_target_value(&event))>
                         <option value="position">"Position"</option><option value="name">"Name"</option>
                         <option value="rarity">"Rarity"</option><option value="wear">"Float"</option>
+                        <option value="qty">"Qty"</option>
                     </select>
                 </div>
                 <Show when=move || !filtered.with(|items| items.is_empty()) fallback=move || view! {
@@ -230,10 +310,12 @@ pub fn InventoryView(
                             <th scope="col">"Item"</th><th scope="col">"Rarity"</th><th scope="col">"Wear / Float"</th>
                             <th scope="col">"Seed"</th><th scope="col">"Qty"</th><th scope="col">"Item ID"</th><th scope="col">"Actions"</th>
                         </tr></thead><tbody>
-                            <For each=move || filtered.with(|items| items.iter().skip(page.get().min(pages.get() - 1) * PAGE_SIZE).take(PAGE_SIZE).cloned().collect::<Vec<_>>())
-                                key=|item| (item.id.clone(), item.name.clone(), item.custom_name.clone(), item.image_url.clone(),
-                                    (item.quantity, item.rarity, item.wear.map(f64::to_bits), item.wear_name.clone(), item.paint_seed, item.stat_trak, item.is_storage_unit))
-                                children=move |item| view! { <InventoryRow item=item on_open_storage=Some(on_open_storage)/> }/>
+                            <For each=move || filtered.with(|rows| rows.iter().skip(page.get().min(pages.get() - 1) * PAGE_SIZE).take(PAGE_SIZE).cloned().collect::<Vec<_>>())
+                                key=|row| row.combined_ids.clone()
+                                children=move |row| {
+                                    let GroupedItem { representative, combined_qty, .. } = row;
+                                    view! { <InventoryRow item=representative display_qty=combined_qty on_open_storage=Some(on_open_storage)/> }
+                                }/>
                         </tbody></table>
                     </div>
                     <footer class="inventory-pagination">
@@ -275,16 +357,27 @@ mod tests {
         }
     }
 
-    fn names(items: &[InventoryItem]) -> Vec<&str> {
-        items.iter().map(|item| item.name.as_str()).collect()
+    fn grouped(item: InventoryItem) -> GroupedItem {
+        let id = item.id.clone();
+        GroupedItem {
+            representative: item,
+            combined_ids: vec![id],
+            combined_qty: 1,
+        }
+    }
+
+    fn names(items: &[GroupedItem]) -> Vec<&str> {
+        items.iter()
+            .map(|row| row.representative.name.as_str())
+            .collect()
     }
 
     #[test]
     fn name_sort_strips_stars_and_spaces_then_breaks_ties_by_id() {
         let mut items = vec![
-            row(9, "★ Bayonet", 0, 5, None),
-            row(2, "AK-47 Redline", 0, 5, None),
-            row(1, "AK 47", 0, 5, None),
+            grouped(row(9, "★ Bayonet", 0, 5, None)),
+            grouped(row(2, "AK-47 Redline", 0, 5, None)),
+            grouped(row(1, "AK 47", 0, 5, None)),
         ];
         sort_rows(&mut items, "name");
         // Star/space stripping matches legacy; remaining compare is plain
@@ -294,18 +387,21 @@ mod tests {
             vec!["AK-47 Redline", "AK 47", "★ Bayonet"]
         );
         // Equal normalized names fall back to id ordering (legacy Default).
-        let mut tied = vec![row(7, "★ Awp", 0, 5, None), row(3, "Awp", 0, 5, None)];
+        let mut tied = vec![
+            grouped(row(7, "★ Awp", 0, 5, None)),
+            grouped(row(3, "Awp", 0, 5, None)),
+        ];
         sort_rows(&mut tied, "name");
-        assert_eq!(tied[0].id, "3");
-        assert_eq!(tied[1].id, "7");
+        assert_eq!(tied[0].representative.id, "3");
+        assert_eq!(tied[1].representative.id, "7");
     }
 
     #[test]
     fn position_sort_is_ascending_with_normalized_name_tie_breaks() {
         let mut items = vec![
-            row(1, "Zebra", 5, 5, None),
-            row(2, "★ Apple", 5, 5, None),
-            row(3, "Mango", 1, 5, None),
+            grouped(row(1, "Zebra", 5, 5, None)),
+            grouped(row(2, "★ Apple", 5, 5, None)),
+            grouped(row(3, "Mango", 1, 5, None)),
         ];
         sort_rows(&mut items, "position");
         assert_eq!(names(&items), vec!["Mango", "★ Apple", "Zebra"]);
@@ -314,9 +410,9 @@ mod tests {
     #[test]
     fn rarity_sorts_ascending_like_legacy() {
         let mut items = vec![
-            row(1, "Covert", 0, 6, None),
-            row(2, "Consumer", 0, 1, None),
-            row(3, "Restricted", 0, 4, None),
+            grouped(row(1, "Covert", 0, 6, None)),
+            grouped(row(2, "Consumer", 0, 1, None)),
+            grouped(row(3, "Restricted", 0, 4, None)),
         ];
         sort_rows(&mut items, "rarity");
         assert_eq!(names(&items), vec!["Consumer", "Restricted", "Covert"]);
@@ -325,15 +421,67 @@ mod tests {
     #[test]
     fn wear_sorts_descending_with_unknown_wear_last() {
         let mut items = vec![
-            row(1, "Factory New", 0, 5, Some(0.03)),
-            row(2, "No wear data", 0, 5, None),
-            row(3, "Battle", 0, 5, Some(0.61)),
-            row(4, "Well-Worn", 0, 5, Some(0.42)),
+            grouped(row(1, "Factory New", 0, 5, Some(0.03))),
+            grouped(row(2, "No wear data", 0, 5, None)),
+            grouped(row(3, "Battle", 0, 5, Some(0.61))),
+            grouped(row(4, "Well-Worn", 0, 5, Some(0.42))),
         ];
         sort_rows(&mut items, "wear");
         assert_eq!(
             names(&items),
             vec!["Battle", "Well-Worn", "Factory New", "No wear data"]
         );
+    }
+
+    #[test]
+    fn equivalent_items_group_with_retained_ids_and_counted_quantity() {
+        let items = vec![
+            row(1, "AK-47 | Redline", 0, 5, Some(0.15)),
+            row(2, "AK-47 | Redline", 1, 5, Some(0.15)),
+            row(3, "AK-47 | Redline", 2, 5, Some(0.30)),
+            row(4, "AK-47 | Redline", 3, 5, None),
+            row(5, "AK-47 | Blue Laminate", 4, 5, Some(0.15)),
+        ];
+        let grouped = group_items(items);
+        assert_eq!(grouped.len(), 4);
+        // Same name + wear groups; different float and missing float split.
+        assert_eq!(grouped[0].combined_ids, vec!["1", "2"]);
+        assert_eq!(grouped[0].combined_qty, 2);
+        assert_eq!(grouped[0].representative.id, "1");
+        assert_eq!(grouped[1].representative.wear, Some(0.30));
+        assert_eq!(grouped[2].representative.wear, None);
+
+        // Nametags split groups, matching custom name in the legacy key.
+        let mut first = row(6, "Glock-18", 0, 3, None);
+        first.custom_name = Some("Mine".into());
+        let mut second = row(7, "Glock-18", 0, 3, None);
+        second.custom_name = Some("Mine".into());
+        let mut third = row(8, "Glock-18", 0, 3, None);
+        third.custom_name = Some("Yours".into());
+        let grouped = group_items(vec![first, second, third]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].combined_qty, 2);
+        assert_eq!(grouped[1].combined_qty, 1);
+    }
+
+    #[test]
+    fn quantity_sort_descends_over_combined_quantities() {
+        let single = group_items(vec![row(1, "Lonely", 0, 5, None)]);
+        let triple = group_items(vec![
+            row(2, "Stacked", 1, 5, None),
+            row(3, "Stacked", 2, 5, None),
+            row(4, "Stacked", 3, 5, None),
+        ]);
+        let mut items = vec![single[0].clone(), triple[0].clone()];
+        sort_rows(&mut items, "qty");
+        assert_eq!(items[0].combined_qty, 3);
+        assert_eq!(items[1].combined_qty, 1);
+
+        // Ties fall back to the normalized name.
+        let a = group_items(vec![row(10, "Same", 0, 5, None), row(11, "Same", 1, 5, None)]);
+        let b = group_items(vec![row(12, "Aaa", 2, 5, None), row(13, "Aaa", 3, 5, None)]);
+        let mut items = vec![a[0].clone(), b[0].clone()];
+        sort_rows(&mut items, "qty");
+        assert_eq!(names(&items), vec!["Aaa", "Same"]);
     }
 }
