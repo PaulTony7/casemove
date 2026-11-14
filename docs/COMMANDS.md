@@ -1,6 +1,6 @@
 # Command & Event Contract
 
-Single source of truth for the IPC surface between UI and core. Legacy defines
+Single source of truth for the command/event surface between UI and core. Legacy defines
 the same channels in three places (`src/main/main.ts`, `src/main/preload.js`,
 renderer call sites); the rewrite defines each name exactly once (Rust command
 signatures + serde types). This document is the strangler seam and the Phase 5
@@ -8,10 +8,13 @@ parity checklist.
 
 Conventions:
 
-- **Commands** are request/response (`invoke` in Tauri). One call, one typed
+- **Commands** are request/response: async methods on `app_core::Core` that the
+  egui UI awaits on its runtime. One call, one typed
   reply, timeouts owned by the core (legacy races `*-reply` events against
-  hand-rolled `setTimeout` in `preload.js`).
-- **Events** are core→UI pushes (`emit` in Tauri). The legacy `userEvents`
+  hand-rolled `setTimeout` in `preload.js`). The names below stay the contract
+  identifiers even though there is no IPC transport anymore.
+- **Events** are core→UI pushes: `app_core::AppEvent` values delivered on the
+  event channel; the sink requests an egui repaint when one lands. The legacy `userEvents`
   mega-channel (`[statusCode, description, data]`, codes 1–4) is split into
   typed events.
 - Status: `☐` not started · `◐` implemented in Rust · `☑` parity verified.

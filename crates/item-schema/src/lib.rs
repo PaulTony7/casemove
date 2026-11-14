@@ -138,6 +138,26 @@ impl ItemSchema {
             image_url,
         }
     }
+
+    /// Direct `prefab` field on the item definition (no prefab inheritance —
+    /// legacy `itemProcessorCanBeMoved` reads it directly).
+    pub fn prefab(&self, definition_index: u32) -> Option<&str> {
+        self.schema
+            .get("items")?
+            .get(definition_index.to_string())?
+            .get("prefab")
+            .and_then(Value::as_str)
+    }
+
+    /// Direct schema attribute on the item definition, e.g.
+    /// `attributes["cannot trade"]`.
+    pub fn item_attribute(&self, definition_index: u32, key: &str) -> Option<&Value> {
+        self.schema
+            .get("items")?
+            .get(definition_index.to_string())?
+            .get("attributes")?
+            .get(key)
+    }
 }
 
 #[cfg(test)]

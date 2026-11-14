@@ -1,13 +1,28 @@
 # Casemove Rewrite Plan
 
-Incremental (strangler) rewrite of Casemove from Electron/React into a Tauri 2 + Rust
-core + Leptos UI application, with no JavaScript in the new codebase.
+Incremental (strangler) rewrite of Casemove from Electron/React into a Rust
+core + native egui (eframe) UI application, with no JavaScript in the new
+codebase.
 
 Motivation: maintainability/modularity, reliability bug fixes, modernized stack,
 performance, and first-class support for Steam + third-party market APIs.
 
 ## Current Progress (2026-11-13)
 
+- The UI shell was swapped from Tauri 2 + Leptos/WASM to **eframe + egui
+  (native, no webview, no trunk)**. The former `src-tauri` command handlers
+  moved verbatim into the new `crates/app-core` crate as plain async methods on
+  `Core`; the two Tauri events (`login:qr_challenge`, `wallet:changed`) became
+  `AppEvent`s on a channel whose sink requests an egui repaint. All workspace
+  tests pass after the move (accounts/session/inventory/model tests unchanged in
+  behavior). The login screen and inventory table were re-implemented in egui
+  with the same states, attempt/stale-reply guards, zeroization discipline, and
+  charcoal theme; item thumbnails and avatars are fetched off-thread into a
+  texture cache. Removed with the swap: `src-tauri/`, trunk/`index.html`/
+  `styles.css`, the WASM toolchain target, and the Leptos dependencies.
+  Packaging still needs a non-Tauri bundler (cargo-dist/cargo-packager) —
+  window icons moved to `icons/`. Live-account verification of the egui screens
+  is still pending, as before.
 - The Windows Tauri app builds and packages; it no longer opens the greeting
   template. The Leptos signed-out screen follows the legacy charcoal palette,
   Casemove branding, navigation, Steam login methods, and saved-account sidebar.
@@ -74,7 +89,7 @@ performance, and first-class support for Steam + third-party market APIs.
 
 ## Strategy
 
-- **Dual-app strangler**: the new Tauri app lives in this repo and grows
+- **Dual-app strangler**: the new app lives in this repo and grows
   feature-by-feature to parity; the Electron app stays shippable the whole time.
   Each parity milestone deletes the corresponding legacy code. Zero JavaScript in
   the new app.
@@ -90,9 +105,9 @@ performance, and first-class support for Steam + third-party market APIs.
 ```
 casemove/
 ├── legacy/                  # current Electron project (moved wholesale, still buildable)
-├── src/                     # Leptos frontend (Rust -> WASM, trunk, zero JS)
-├── src-tauri/               # Tauri shell: window, tray, command dispatch
+├── src/                     # egui frontend (native eframe app, no JS, no WASM)
 ├── crates/
+│   ├── app-core/            # command layer: Core methods over shared state
 │   ├── app-commands/        # typed command + event contract (the strangler seam)
 │   ├── steam-core/          # login strategies, session, CM events
 │   ├── gc-cs2/              # GC session, SO cache, casket ops  ← critical path
@@ -167,7 +182,8 @@ the trait, rate-limiting/caching.
 
 ### Phase 5 — Cutover
 
-Parity checklist sign-off, data migration on first run, Tauri bundler replaces
+Parity checklist sign-off, data migration on first run, a native packager
+(cargo-dist/cargo-packager) replaces
 `electron-builder` (sign/notarize equivalents), delete `legacy/`.
 
 ## Risks
@@ -177,7 +193,7 @@ Parity checklist sign-off, data migration on first run, Tauri bundler replaces
 | No Rust equivalent of `globaloffensive` — GC session layer must be reimplemented | Spike B first; `globaloffensive` is MIT so its source is a legitimate reference; Node sidecar contingency behind the contract |
 | Pre-1.0 Steam crates (`steam-vent`, `steam-client-rs`, `steam-auth-rs`) | Adapter traits + pinned versions + sidecar contingency |
 | CS2 protobuf drift | Automated proto sync from `SteamDatabase/GameTracking-CS2` (as `node-cs2` does) |
-| Linux webview variance (WebKitGTK) | Spike C packaging test on Linux early |
+| ~~Linux webview variance (WebKitGTK)~~ | Retired: the UI is native egui, no webview |
 | Two apps drifting during transition | Parity checklist + shared golden fixtures |
 
 ## Testing
@@ -194,7 +210,7 @@ Parity checklist sign-off, data migration on first run, Tauri bundler replaces
 
 Add lightweight timing probes to the legacy app around the same points the new
 app instruments, run the scripted benchmark scenario suite, and record results
-in `docs/metrics-baseline.md`. The same scenarios run against the Tauri app at
+in `docs/metrics-baseline.md`. The same scenarios run against the new app at
 every milestone, side by side.
 
 Shared benchmark scenarios (identical script for both apps):
@@ -214,10 +230,10 @@ Shared benchmark scenarios (identical script for both apps):
 
 - Cold start: ≤ 50% of baseline (no Chromium boot)
 - Login→inventory (S2): no regression at minimum; target ≤ baseline
-- Filter/sort p95 (S4): < 16 ms in WASM (under one frame)
+- Filter/sort p95 (S4): < 16 ms on the UI thread (under one frame)
 - Bulk-move throughput (S5): ≥ legacy
 - Steady-state RSS (S6): flat growth; ≤ 50% of legacy
-- Installer size: record baseline (Electron ~150–200 MB) → Tauri target ~15–30 MB
+- Installer size: record baseline (Electron ~150–200 MB) → native target ~15–30 MB
 
 **Reliability**
 

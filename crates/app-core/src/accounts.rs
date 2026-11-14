@@ -1,9 +1,8 @@
+use crate::Core;
 use app_commands::SavedAccount;
 use serde_json::{Map, Value};
 use settings::SettingsStore;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tauri::Manager;
 use zeroize::Zeroizing;
 
 pub(crate) fn login_vault() -> settings::SecretStore {
@@ -282,44 +281,43 @@ fn remove_account(store: &mut SettingsStore, username: &str) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-pub fn store_get_accounts(
-    store: tauri::State<'_, Mutex<SettingsStore>>,
-) -> Result<Vec<SavedAccount>, String> {
-    let store = store
-        .lock()
-        .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
-    Ok(list_accounts(&store))
-}
-
-#[tauri::command]
-pub async fn store_delete_account(
-    username: String,
-    app: tauri::AppHandle,
-) -> Result<Vec<SavedAccount>, String> {
-    // Keyring (zbus) calls can block for seconds — keep them off the main thread.
-    tauri::async_runtime::spawn_blocking(move || {
-        let settings = app.state::<Mutex<SettingsStore>>();
-        let mut store = settings
+impl Core {
+    pub fn store_get_accounts(&self) -> Result<Vec<SavedAccount>, String> {
+        let store = self
+            .store
             .lock()
             .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
-        forget_with_vault(&mut store, &login_vault(), &username)?;
         Ok(list_accounts(&store))
-    })
-    .await
-    .map_err(|_| "The account operation failed.".to_owned())?
-}
+    }
 
-#[tauri::command]
-pub fn store_set_account_position(
-    username: String,
-    index: usize,
-    store: tauri::State<'_, Mutex<SettingsStore>>,
-) -> Result<Vec<SavedAccount>, String> {
-    let mut store = store
-        .lock()
-        .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
-    set_account_position(&mut store, &username, index)
+    pub async fn store_delete_account(
+        &self,
+        username: String,
+    ) -> Result<Vec<SavedAccount>, String> {
+        // Keyring (zbus) calls can block for seconds — keep them off the main thread.
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut store = store
+                .lock()
+                .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
+            forget_with_vault(&mut store, &login_vault(), &username)?;
+            Ok(list_accounts(&store))
+        })
+        .await
+        .map_err(|_| "The account operation failed.".to_owned())?
+    }
+
+    pub fn store_set_account_position(
+        &self,
+        username: String,
+        index: usize,
+    ) -> Result<Vec<SavedAccount>, String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
+        set_account_position(&mut store, &username, index)
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +325,7 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
+    use std::sync::Mutex;
 
     #[derive(Default)]
     struct MemoryVault {
@@ -671,7 +670,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../crates/settings/tests/fixtures/conf-encrypted.bin");
+            .join("../settings/tests/fixtures/conf-encrypted.bin");
         let original = std::fs::read(&fixture).unwrap();
         let mut store = initialize_store(path.clone(), vec![fixture.clone()]).unwrap();
         assert_eq!(list_accounts(&store).len(), 3);
@@ -697,7 +696,7 @@ mod tests {
             .set("pricing.currency", "EUR")
             .unwrap();
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../crates/settings/tests/fixtures/conf-encrypted.bin");
+            .join("../settings/tests/fixtures/conf-encrypted.bin");
         let store = initialize_store(path, vec![fixture]).unwrap();
         assert_eq!(
             store.get::<String>("pricing.currency").as_deref(),

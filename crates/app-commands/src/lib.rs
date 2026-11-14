@@ -166,6 +166,16 @@ pub struct InventoryItem {
     pub category: Option<String>,
     #[serde(default)]
     pub major: Option<String>,
+    /// Epoch milliseconds when the tradehold lifts; only present for items
+    /// still trade-locked (legacy `trade_unlock`).
+    #[serde(default)]
+    pub trade_unlock: Option<i64>,
+    #[serde(default)]
+    pub moveable: bool,
+    #[serde(default)]
+    pub equipped_ct: bool,
+    #[serde(default)]
+    pub equipped_t: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

@@ -64,15 +64,17 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Quantity sort (descending over combined quantities, normalized-name tie-break).
 - [x] Category and subcategory classification/filtering (legacy `getCategory`:8 URL-based categories first-match in legacy order, majors by lowest-name-position match; category/rarity/major filter chips with OR-within/AND-across semantics).
 - [x] Rarity-selection filter (tier names via the shared rarity labels).
-- [ ] Item-property filters (tradehold, stickers, equipped state).
+- [x] Item-property filters (tradehold, nametag, storage-moveable, equipped CT/T; OR within the group like the other chip groups).
+- [ ] Sticker/patch property filter (lands with sticker metadata below).
 - [x] Category sort (ascending, uncategorized first, normalized-name tie-break).
-- [ ] Price, collection, sticker, tradehold, and storage-name sorts.
+- [x] Tradehold sort (no-tradehold items first, then soonest unlock, normalized-name tie-break).
+- [ ] Price, collection, sticker, and storage-name sorts.
 - [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
 - [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.
 - [ ] Music-kit, graffiti/tint, agent, and other specialized-item enrichment.
 - [ ] Collection metadata and trade-up eligibility.
-- [ ] Tradehold/unlock dates, origin, moveability, and equipped state.
+- [x] Tradehold/unlock dates (attr 75 raw-seconds → future-only `trade_unlock`, "N days" badge in the table), origin, moveability (full legacy rule chain + star/pin/music-kit overrides), and equipped state (equipped_state class 2→T, 3→CT); origin stays internal, driving the moveable rules.
 - [ ] Complete image coverage and live schema refresh with bundled fallback.
 - [ ] Configurable inventory columns.
 

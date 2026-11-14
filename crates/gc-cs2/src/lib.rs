@@ -72,6 +72,14 @@ pub struct EconItem {
     pub rarity: u32,
     pub custom_name: Option<String>,
     pub attributes: Vec<ItemAttribute>,
+    pub origin: Option<u32>,
+    pub flags: Option<u32>,
+    /// `new_class` values from `equipped_state` (legacy reads 2 → T, 3 → CT).
+    pub equipped_classes: Vec<u32>,
+    /// Attribute 166 (music-kit index), raw u32 encoding.
+    pub music_index: Option<u32>,
+    /// Attribute 75 (tradable-after), raw u32 seconds since epoch.
+    pub tradeable_after_secs: Option<u32>,
 }
 
 /// Legacy display/sort position, matching globaloffensive's
@@ -366,10 +374,10 @@ impl BrowserInventoryClient {
         };
         let result = tokio::time::timeout(CASKET_LOAD_TIMEOUT, async {
             while let Some(message) = messages.recv().await {
-                if let Some(event) = browser_casket_event(message)? {
-                    if collector.apply(event)? {
-                        return Ok(());
-                    }
+                if let Some(event) = browser_casket_event(message)?
+                    && collector.apply(event)?
+                {
+                    return Ok(());
                 }
             }
             Err(InventoryError::ConnectionFailed)
@@ -430,7 +438,31 @@ fn parse_item(bytes: &[u8]) -> Result<EconItem, InventoryError> {
     if item.id() == 0 || item.def_index() == 0 {
         return Err(InventoryError::InvalidItem);
     }
-    Ok(EconItem {
+    Ok(econ_item(item))
+}
+
+/// Attribute values that globaloffensive reads as raw little-endian u32
+/// (tradable-after, music-kit index) rather than float32.
+pub fn attribute_raw_u32(attributes: &[ItemAttribute], definition_index: u32) -> Option<u32> {
+    let bytes = &attributes
+        .iter()
+        .find(|attribute| attribute.definition_index == definition_index)?
+        .value;
+    <[u8; 4]>::try_from(bytes.as_slice())
+        .ok()
+        .map(u32::from_le_bytes)
+}
+
+fn econ_item(item: CSOEconItem) -> EconItem {
+    let attributes: Vec<ItemAttribute> = item
+        .attribute
+        .iter()
+        .map(|attribute| ItemAttribute {
+            definition_index: attribute.def_index(),
+            value: attribute.value_bytes().to_vec(),
+        })
+        .collect();
+    EconItem {
         id: item.id(),
         definition_index: item.def_index(),
         inventory_position: item.inventory,
@@ -438,15 +470,17 @@ fn parse_item(bytes: &[u8]) -> Result<EconItem, InventoryError> {
         quality: item.quality(),
         rarity: item.rarity(),
         custom_name: item.custom_name.filter(|name| !name.is_empty()),
-        attributes: item
-            .attribute
+        origin: item.origin,
+        flags: item.flags,
+        equipped_classes: item
+            .equipped_state
             .iter()
-            .map(|attribute| ItemAttribute {
-                definition_index: attribute.def_index(),
-                value: attribute.value_bytes().to_vec(),
-            })
+            .filter_map(|state| state.new_class)
             .collect(),
-    })
+        music_index: attribute_raw_u32(&attributes, 166),
+        tradeable_after_secs: attribute_raw_u32(&attributes, 75),
+        attributes,
+    }
 }
 
 fn removed_item_id(bytes: &[u8]) -> Result<u64, InventoryError> {
@@ -726,23 +760,7 @@ pub fn parse_inventory(welcome: &CMsgClientWelcome) -> Result<Vec<EconItem>, Inv
                 if item.id() == 0 || item.def_index() == 0 {
                     return Err(InventoryError::InvalidItem);
                 }
-                let item = EconItem {
-                    id: item.id(),
-                    definition_index: item.def_index(),
-                    inventory_position: item.inventory,
-                    quantity: item.quantity.unwrap_or(1),
-                    quality: item.quality(),
-                    rarity: item.rarity(),
-                    custom_name: item.custom_name.filter(|name| !name.is_empty()),
-                    attributes: item
-                        .attribute
-                        .iter()
-                        .map(|attribute| ItemAttribute {
-                            definition_index: attribute.def_index(),
-                            value: attribute.value_bytes().to_vec(),
-                        })
-                        .collect(),
-                };
+                let item = econ_item(item);
                 if items.insert(item.id, item).is_some() {
                     return Err(InventoryError::DuplicateItem);
                 }
@@ -1091,6 +1109,59 @@ mod tests {
             (parsed.casket_item_id(), parsed.item_item_id()),
             (CASKET, CASKET)
         );
+    }
+
+    #[test]
+    fn parses_origin_flags_equipment_and_raw_u32_attributes() {
+        let bytes = CSOEconItem {
+            id: Some(99),
+            def_index: Some(7),
+            inventory: Some(1),
+            origin: Some(5),
+            flags: Some(10),
+            equipped_state: vec![steam_vent_proto_csgo::base_gcmessages::CSOEconItemEquipped {
+                new_class: Some(2),
+                new_slot: Some(1),
+                ..Default::default()
+            }],
+            attribute: vec![
+                steam_vent_proto_csgo::base_gcmessages::CSOEconItemAttribute {
+                    def_index: Some(75),
+                    value_bytes: Some(1_800_000_000u32.to_le_bytes().to_vec()),
+                    ..Default::default()
+                },
+                steam_vent_proto_csgo::base_gcmessages::CSOEconItemAttribute {
+                    def_index: Some(166),
+                    value_bytes: Some(3u32.to_le_bytes().to_vec()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .write_to_bytes()
+        .unwrap();
+
+        let inventory = parse_inventory(&welcome(vec![bytes])).unwrap();
+        let item = &inventory[0];
+        assert_eq!(item.origin, Some(5));
+        assert_eq!(item.flags, Some(10));
+        // Legacy: new_class 2 → equipped T, 3 → equipped CT.
+        assert_eq!(item.equipped_classes, vec![2]);
+        assert_eq!(item.tradeable_after_secs, Some(1_800_000_000));
+        assert_eq!(item.music_index, Some(3));
+
+        assert_eq!(
+            attribute_raw_u32(&item.attributes, 75),
+            Some(1_800_000_000)
+        );
+        assert_eq!(attribute_raw_u32(&item.attributes, 999), None);
+        // Float-encoded attributes are not misread as raw u32s.
+        let float_bytes = 4.0f32.to_le_bytes().to_vec();
+        let attributes = vec![ItemAttribute {
+            definition_index: 6,
+            value: float_bytes,
+        }];
+        assert_ne!(attribute_raw_u32(&attributes, 6), Some(4));
     }
 
     #[test]

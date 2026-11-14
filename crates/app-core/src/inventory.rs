@@ -1,10 +1,10 @@
+use crate::Core;
 use app_commands::{InventoryItem, InventorySnapshot};
 use gc_cs2::{EconItem, InventoryClient, InventoryError};
 use item_schema::ItemSchema;
-use tokio::sync::Mutex;
 
 #[derive(Default)]
-pub struct InventoryState(Mutex<Option<GcSlot<InventoryClient>>>);
+pub struct InventoryState(tokio::sync::Mutex<Option<GcSlot<InventoryClient>>>);
 
 struct GcSlot<Client> {
     generation: u64,
@@ -108,6 +108,42 @@ fn wear_name(wear: f64) -> &'static str {
     }
 }
 
+/// Legacy `trade_unlock`: attribute 75 (raw seconds) must still be in the
+/// future and the item name must not be a key.
+fn trade_unlock_ms(name: &str, tradeable_after_secs: Option<u32>, now_ms: i64) -> Option<i64> {
+    let unlock_ms = i64::from(tradeable_after_secs?) * 1000;
+    (unlock_ms >= now_ms && !name.contains("Key")).then_some(unlock_ms)
+}
+
+/// Port of legacy `itemProcessorCanBeMoved` plus its post-overrides
+/// (star quality forces moveable; promotional pins and music kits with
+/// origin 0 are not).
+fn compute_moveable(schema: &ItemSchema, item: &EconItem, item_url: &str, name: &str) -> bool {
+    let excluded = schema.prefab(item.definition_index) == Some("collectible_untradable")
+        || (item_url.contains("econ/status_icons/") && item.origin == Some(0))
+        || item_url.contains("econ/status_icons/service_medal_")
+        || item.definition_index == 987
+        || item_url.contains("plusstars")
+        || (schema
+            .item_attribute(item.definition_index, "cannot trade")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1))
+        || (item_url.contains("crate_key") && item.flags == Some(10))
+        || item_url.contains("weapons/base_weapons");
+    let mut moveable = !excluded;
+    // Legacy overrides, in order.
+    if item.quality == 3 {
+        moveable = true;
+    }
+    if name.contains("Pin") && item.origin == Some(5) {
+        moveable = false;
+    }
+    if item.music_index.is_some() && item.origin == Some(0) {
+        moveable = false;
+    }
+    moveable
+}
+
 fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     let paint = attribute_integer(&item, 6);
     let wear = attribute_float(&item, 8)
@@ -141,6 +177,20 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         .and_then(domain::classify_category)
         .map(str::to_owned);
     let major = domain::classify_major(&name).map(str::to_owned);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let trade_unlock = trade_unlock_ms(&name, item.tradeable_after_secs, now_ms);
+    let item_url = description
+        .image_path
+        .as_deref()
+        .or(description.image_url.as_deref())
+        .unwrap_or_default();
+    let moveable = compute_moveable(schema, &item, item_url, &name);
+    // Legacy `itemProcessorisEquipped`: new_class 2 → T, 3 → CT.
+    let equipped_ct = item.equipped_classes.contains(&3);
+    let equipped_t = item.equipped_classes.contains(&2);
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
@@ -157,6 +207,10 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         is_storage_unit: item.definition_index == 1201,
         category,
         major,
+        trade_unlock,
+        moveable,
+        equipped_ct,
+        equipped_t,
     }
 }
 
@@ -220,88 +274,98 @@ fn storage_contents_error(error: InventoryError) -> String {
     }
 }
 
-#[tauri::command]
-pub async fn refresh_inventory(
-    session: tauri::State<'_, crate::session::DesktopSession>,
-    inventory: tauri::State<'_, InventoryState>,
-    schema: tauri::State<'_, ItemSchema>,
-) -> Result<InventorySnapshot, String> {
-    let session = &*session;
-    session
-        .with_connection(|connection, generation| async move {
-            let mut state = inventory
-                .0
-                .try_lock()
-                .map_err(|_| "An inventory request is already in progress.".to_owned())?;
-            let attach = session.in_generation(generation, || prepare_slot(&mut state, generation))
-                .map_err(|error| error.to_string())??;
-            let items = if attach {
-                let connected = if let Some(browser_client) = connection.browser_client() {
-                    InventoryClient::connect_browser(browser_client).await
-                } else if let Some(steam_vent) = connection.steam_vent() {
-                    InventoryClient::connect(steam_vent).await
+impl Core {
+    pub async fn refresh_inventory(&self) -> Result<InventorySnapshot, String> {
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = &*self.schema;
+        session
+            .with_connection(|connection, generation| async move {
+                let mut state = inventory
+                    .0
+                    .try_lock()
+                    .map_err(|_| "An inventory request is already in progress.".to_owned())?;
+                let attach = session
+                    .in_generation(generation, || prepare_slot(&mut state, generation))
+                    .map_err(|error| error.to_string())??;
+                let items = if attach {
+                    let connected = if let Some(browser_client) = connection.browser_client() {
+                        InventoryClient::connect_browser(browser_client).await
+                    } else if let Some(steam_vent) = connection.steam_vent() {
+                        InventoryClient::connect(steam_vent).await
+                    } else {
+                        return Err("The Steam connection is unavailable.".into());
+                    };
+                    let (client, items) = connected.map_err(|error| {
+                        format!("{error} Sign out of Steam and sign back in before reconnecting.")
+                    })?;
+                    session
+                        .in_generation(generation, || {
+                            *state = Some(GcSlot {
+                                generation,
+                                client: Some(client),
+                                items: items.clone(),
+                            });
+                        })
+                        .map_err(|error| error.to_string())?;
+                    items
                 } else {
-                    return Err("The Steam connection is unavailable.".into());
+                    let client = state.as_ref().and_then(|slot| slot.client.as_ref()).ok_or_else(|| {
+                        "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                            .to_owned()
+                    })?;
+                    let items = client.refresh().await.map_err(|error| error.to_string())?;
+                    session
+                        .in_generation(generation, || {
+                            state
+                                .as_mut()
+                                .filter(|slot| slot.generation == generation)
+                                .map(|slot| slot.items = items.clone())
+                        })
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| {
+                            "The Steam session changed. Load inventory again.".to_owned()
+                        })?;
+                    items
                 };
-                let (client, items) = connected
-                    .map_err(|error| format!("{error} Sign out of Steam and sign back in before reconnecting."))?;
-                session.in_generation(generation, || {
-                    *state = Some(GcSlot { generation, client: Some(client), items: items.clone() });
-                }).map_err(|error| error.to_string())?;
-                items
-            } else {
-                let client = state.as_ref().and_then(|slot| slot.client.as_ref())
-                    .ok_or_else(|| "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting.".to_owned())?;
-                let items = client.refresh().await.map_err(|error| error.to_string())?;
-                session.in_generation(generation, || {
-                    state.as_mut().filter(|slot| slot.generation == generation)
-                        .map(|slot| slot.items = items.clone())
-                }).map_err(|error| error.to_string())?
-                    .ok_or_else(|| "The Steam session changed. Load inventory again.".to_owned())?;
-                items
-            };
-            let rows = to_rows(items, &schema, false)?;
-            Ok(InventorySnapshot {
-                steam_id: connection.steam_id(),
-                items: rows,
+                let rows = to_rows(items, schema, false)?;
+                Ok(InventorySnapshot {
+                    steam_id: connection.steam_id(),
+                    items: rows,
+                })
             })
-        })
-        .await
-        .map_err(|error| error.to_string())?
-}
+            .await
+            .map_err(|error| error.to_string())?
+    }
 
-#[tauri::command]
-pub async fn storage_contents(
-    casket_id: String,
-    session: tauri::State<'_, crate::session::DesktopSession>,
-    inventory: tauri::State<'_, InventoryState>,
-    schema: tauri::State<'_, ItemSchema>,
-) -> Result<Vec<InventoryItem>, String> {
-    let casket_id = parse_storage_id(&casket_id)?;
-    let schema = &*schema;
-    let inventory = &*inventory;
-    session
-        .with_connection(|_connection, generation| async move {
-            let state = inventory.0.try_lock().map_err(|_| {
-                "An inventory or storage request is already in progress.".to_owned()
-            })?;
-            let slot = state
-                .as_ref()
-                .filter(|slot| slot.generation == generation)
-                .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
-            let expected_count = storage_item_count(&slot.items, casket_id)?;
-            let client = slot.client.as_ref().ok_or_else(|| {
-                "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
-                    .to_owned()
-            })?;
-            let items = client
-                .storage_contents(casket_id, expected_count)
-                .await
-                .map_err(storage_contents_error)?;
-            to_rows(items, schema, true)
-        })
-        .await
-        .map_err(|error| error.to_string())?
+    pub async fn storage_contents(&self, casket_id: String) -> Result<Vec<InventoryItem>, String> {
+        let casket_id = parse_storage_id(&casket_id)?;
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = &*self.schema;
+        session
+            .with_connection(|_connection, generation| async move {
+                let state = inventory.0.try_lock().map_err(|_| {
+                    "An inventory or storage request is already in progress.".to_owned()
+                })?;
+                let slot = state
+                    .as_ref()
+                    .filter(|slot| slot.generation == generation)
+                    .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+                let expected_count = storage_item_count(&slot.items, casket_id)?;
+                let client = slot.client.as_ref().ok_or_else(|| {
+                    "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                        .to_owned()
+                })?;
+                let items = client
+                    .storage_contents(casket_id, expected_count)
+                    .await
+                    .map_err(storage_contents_error)?;
+                to_rows(items, schema, true)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +382,11 @@ mod tests {
             quality: 0,
             rarity: 5,
             custom_name: Some("Nametag".into()),
+            origin: None,
+            flags: None,
+            equipped_classes: Vec::new(),
+            music_index: None,
+            tradeable_after_secs: None,
             attributes: vec![ItemAttribute {
                 definition_index: 8,
                 value: 0.1f32.to_le_bytes().to_vec(),
@@ -553,5 +622,101 @@ mod tests {
         let mut missing = item();
         missing.inventory_position = None;
         assert_eq!(enrich_item(missing, &schema).position, 9999);
+    }
+
+    #[test]
+    fn trade_unlock_only_survives_for_future_non_key_items() {
+        let now = 1_800_000_000_000i64;
+        // Future unlock passes, in raw seconds → ms.
+        assert_eq!(
+            trade_unlock_ms("AK-47", Some(1_800_008_640), now),
+            Some(1_800_008_640_000)
+        );
+        // Past unlocks are dropped at conversion time (legacy compares to now).
+        assert_eq!(trade_unlock_ms("AK-47", Some(1_700_000_000), now), None);
+        // Keys never show a tradehold.
+        assert_eq!(
+            trade_unlock_ms("Weapon Case Key", Some(1_800_008_640), now),
+            None
+        );
+        assert_eq!(trade_unlock_ms("AK-47", None, now), None);
+    }
+
+    #[test]
+    fn moveable_follows_legacy_rules_and_overrides() {
+        let schema = ItemSchema::bundled().unwrap();
+        let skin_url = "econ/default_generated/weapon_ak47_bloodsport_light_large";
+        let plain = item();
+
+        // Skins are moveable; plain base weapons are not.
+        assert!(compute_moveable(&schema, &plain, skin_url, "AK-47"));
+        assert!(!compute_moveable(
+            &schema,
+            &plain,
+            "econ/weapons/base_weapons/weapon_ak47",
+            "AK-47"
+        ));
+
+        // The bundled schema marks storage units "cannot trade".
+        let mut casket = item();
+        casket.definition_index = 1201;
+        assert!(!compute_moveable(&schema, &casket, "econ/tools/casket", "Storage Unit"));
+
+        // Legacy hard-coded exclusions.
+        let mut flagged = item();
+        flagged.definition_index = 987;
+        assert!(!compute_moveable(&schema, &flagged, skin_url, "X"));
+        assert!(!compute_moveable(
+            &schema,
+            &plain,
+            "econ/status_icons/service_medal_2018",
+            "Medal"
+        ));
+        let mut origin_zero = item();
+        origin_zero.origin = Some(0);
+        assert!(!compute_moveable(
+            &schema,
+            &origin_zero,
+            "econ/status_icons/coin",
+            "Coin"
+        ));
+        let mut keyed = item();
+        keyed.flags = Some(10);
+        assert!(!compute_moveable(
+            &schema,
+            &keyed,
+            "econ/tools/weapon_case_key_crate_key",
+            "Key"
+        ));
+
+        // Overrides: star quality forces moveable; promotional pin (origin 5)
+        // and music kit (origin 0) are forced unmoveable.
+        let mut star = item();
+        star.definition_index = 987;
+        star.quality = 3;
+        assert!(compute_moveable(&schema, &star, skin_url, "X"));
+        let mut pin = item();
+        pin.origin = Some(5);
+        assert!(!compute_moveable(&schema, &pin, skin_url, "Pin - Katowice"));
+        let mut music = item();
+        music.origin = Some(0);
+        music.music_index = Some(3);
+        assert!(!compute_moveable(&schema, &music, skin_url, "Music Kit"));
+    }
+
+    #[test]
+    fn equipped_classes_map_to_legacy_ct_and_t_flags() {
+        let schema = ItemSchema::bundled().unwrap();
+        let mut rifle = item();
+        rifle.equipped_classes = vec![2];
+        let row = enrich_item(rifle, &schema);
+        assert!(row.equipped_t);
+        assert!(!row.equipped_ct);
+
+        let mut rifle = item();
+        rifle.equipped_classes = vec![3, 1];
+        let row = enrich_item(rifle, &schema);
+        assert!(row.equipped_ct);
+        assert!(!row.equipped_t);
     }
 }
