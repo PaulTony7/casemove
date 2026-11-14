@@ -168,6 +168,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         name = format!("★ {name}");
     }
     let position = item.legacy_position();
+    let wear_name = wear.map(|wear| wear_name(wear).to_owned());
     // Category from the econ path (legacy matched `item_url`), major from the
     // final display name exactly like legacy's post-prefix `getCategory`.
     let category = description
@@ -191,6 +192,15 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     // Legacy `itemProcessorisEquipped`: new_class 2 → T, 3 → CT.
     let equipped_ct = item.equipped_classes.contains(&3);
     let equipped_t = item.equipped_classes.contains(&2);
+    // Legacy prices only moveable rows (`handleItem`), from the bundled
+    // snapshot with the default source (steam_listing) in USD — the
+    // source/currency settings are not ported yet.
+    let price = moveable.then(|| {
+        pricing::PriceTable::bundled()
+            .quote(&name, wear_name.as_deref())
+            .get(pricing::PriceSource::SteamListing)
+    });
+    let price = price.flatten();
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
@@ -201,7 +211,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         rarity: item.rarity,
         position,
         wear,
-        wear_name: wear.map(|wear| wear_name(wear).to_owned()),
+        wear_name,
         paint_seed,
         stat_trak,
         is_storage_unit: item.definition_index == 1201,
@@ -211,6 +221,7 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         moveable,
         equipped_ct,
         equipped_t,
+        price,
     }
 }
 
@@ -702,6 +713,28 @@ mod tests {
         music.origin = Some(0);
         music.music_index = Some(3);
         assert!(!compute_moveable(&schema, &music, skin_url, "Music Kit"));
+    }
+
+    #[test]
+    fn prices_are_only_looked_up_for_moveable_items() {
+        let schema = ItemSchema::bundled().unwrap();
+
+        // Painted skins are moveable and priced from the bundled snapshot
+        // (missing table entries resolve to Some(0.0), like legacy).
+        let mut painted = item();
+        painted.attributes.push(ItemAttribute {
+            definition_index: 6,
+            value: 2.0f32.to_le_bytes().to_vec(),
+        });
+        let row = enrich_item(painted, &schema);
+        assert!(row.moveable);
+        assert!(row.price.is_some(), "moveable rows must carry a price");
+
+        // Plain base weapons are not moveable → legacy's handleItem skips
+        // them entirely → no price at all.
+        let row = enrich_item(item(), &schema);
+        assert!(!row.moveable);
+        assert_eq!(row.price, None);
     }
 
     #[test]

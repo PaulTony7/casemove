@@ -162,6 +162,23 @@ pub fn sort_rows<T: std::borrow::Borrow<GroupedItem>>(items: &mut [T], mode: &st
             };
             order.then_with(|| by_name(left.borrow(), right.borrow()))
         }),
+        "price" => items.sort_by(|left, right| {
+            // Legacy price sort (`sortRunAlt`): unpriced rows (NaN →
+            // -9e11) first, then ascending price × combined quantity.
+            let price = |row: &GroupedItem| {
+                row.representative
+                    .price
+                    .map(|price| price * row.combined_qty as f64)
+            };
+            let (left, right) = (left.borrow(), right.borrow());
+            let order = match (price(left), price(right)) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(a), Some(b)) => a.total_cmp(&b),
+            };
+            order.then_with(|| by_name(left, right))
+        }),
         _ => items.sort_by(|left, right| {
             left.borrow()
                 .representative
@@ -253,6 +270,7 @@ mod tests {
             moveable: true,
             equipped_ct: false,
             equipped_t: false,
+            price: None,
         }
     }
 
@@ -537,5 +555,41 @@ mod tests {
         skin.moveable = true;
         let grouped = group_items(vec![base, skin]);
         assert_eq!(grouped.len(), 2);
+    }
+
+    #[test]
+    fn price_sort_puts_unpriced_rows_first_then_ascending_total_value() {
+        let mut expensive = row(1, "Expensive", 0, 5, None);
+        expensive.price = Some(10.0);
+        let mut cheap = row(2, "Cheap", 1, 5, None);
+        cheap.price = Some(1.0);
+        let mut items = vec![
+            grouped(expensive),
+            grouped(row(3, "Unpriced", 2, 5, None)),
+            grouped(cheap),
+        ];
+        sort_rows(&mut items, "price");
+        // Legacy sortRunAlt: NaN (unpriced) → -9e11 → first, then ascending.
+        assert_eq!(names(&items), vec!["Unpriced", "Cheap", "Expensive"]);
+
+        // Price compares as price × combined quantity.
+        let mut big_member = row(4, "Big", 0, 5, None);
+        big_member.price = Some(2.0);
+        let big_group = group_items(vec![
+            big_member,
+            row(5, "Big", 1, 5, None),
+            row(6, "Big", 2, 5, None),
+        ]);
+        assert_eq!(big_group.len(), 1);
+        assert_eq!(big_group[0].combined_qty, 3);
+        let mut single = row(7, "Single", 3, 5, None);
+        single.price = Some(5.0);
+        let mut items = vec![
+            big_group.into_iter().next().unwrap(),
+            grouped(single),
+        ];
+        sort_rows(&mut items, "price");
+        // $5×1 ranks before $2×3=$6.
+        assert_eq!(names(&items), vec!["Single", "Big"]);
     }
 }

@@ -242,6 +242,22 @@ fn main_section(
         .collect();
     inventory::sort_rows(&mut rows, &app.view.sort);
 
+    let inventory_value: f64 = rows
+        .iter()
+        .map(|row| row.representative.price.unwrap_or(0.0) * row.combined_qty as f64)
+        .sum();
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Inventory value: {}",
+                pricing::format_usd(inventory_value)
+            ))
+            .size(13.0)
+            .strong(),
+        );
+    });
+    ui.add_space(6.0);
+
     if rows.is_empty() {
         let empty_inventory = app
             .inventory
@@ -316,9 +332,16 @@ fn toolbar(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         egui::ComboBox::from_id_salt("inventory-sort")
             .selected_text(sort_label(&before))
             .show_ui(ui, |ui| {
-                for value in
-                    ["position", "name", "rarity", "wear", "qty", "category", "tradehold"]
-                {
+                for value in [
+                    "position",
+                    "name",
+                    "rarity",
+                    "wear",
+                    "qty",
+                    "category",
+                    "tradehold",
+                    "price",
+                ] {
                     ui.selectable_value(&mut app.view.sort, value.to_owned(), sort_label(value));
                 }
             });
@@ -337,6 +360,7 @@ fn sort_label(value: &str) -> &'static str {
         "qty" => "Qty",
         "category" => "Category",
         "tradehold" => "Tradehold",
+        "price" => "Price",
         _ => "Position",
     }
 }
@@ -477,11 +501,12 @@ fn table(
     egui_extras::TableBuilder::new(ui)
         .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(egui_extras::Column::initial(width * 0.29).resizable(false))
+        .column(egui_extras::Column::initial(width * 0.25).resizable(false))
         .column(egui_extras::Column::initial(width * 0.12).resizable(false))
         .column(egui_extras::Column::initial(width * 0.15).resizable(false))
         .column(egui_extras::Column::initial(width * 0.06).resizable(false))
         .column(egui_extras::Column::initial(width * 0.06).resizable(false))
+        .column(egui_extras::Column::initial(width * 0.08).resizable(false))
         .column(egui_extras::Column::initial(width * 0.18).resizable(false))
         .column(egui_extras::Column::remainder())
         .max_scroll_height(table_height)
@@ -492,6 +517,7 @@ fn table(
                 "Wear / Float",
                 "Seed",
                 "Qty",
+                "Price",
                 "Item ID",
                 "Actions",
             ] {
@@ -566,6 +592,14 @@ fn table(
                 });
                 row.col(|ui| {
                     ui.label(egui::RichText::new(display_qty.to_string()).size(12.0));
+                });
+                row.col(|ui| {
+                    ui.label(match item.price {
+                        Some(price) => {
+                            egui::RichText::new(pricing::format_usd(price)).size(12.0)
+                        }
+                        None => egui::RichText::new("-").size(11.0).color(theme::MUTED),
+                    });
                 });
                 row.col(|ui| {
                     ui.label(

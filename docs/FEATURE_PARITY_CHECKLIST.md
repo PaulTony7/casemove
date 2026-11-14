@@ -68,7 +68,8 @@ Rust working tree, including the pending storage-contents integration.
 - [ ] Sticker/patch property filter (lands with sticker metadata below).
 - [x] Category sort (ascending, uncategorized first, normalized-name tie-break).
 - [x] Tradehold sort (no-tradehold items first, then soonest unlock, normalized-name tie-break).
-- [ ] Price, collection, sticker, and storage-name sorts.
+- [ ] Collection, sticker, and storage-name sorts.
+- [x] Price sort (unpriced first, then ascending price × combined quantity, normalized-name tie-break).
 - [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
 - [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.
@@ -124,7 +125,8 @@ Rust working tree, including the pending storage-contents integration.
 
 ## Pricing, Overview, And Reports
 
-- [ ] Steam Market price lookup, cache, fallback, and unavailable-price handling.
+- [x] Price resolution from the bundled legacy snapshot (key quirks, steam window priority, zeros fallback, unpriced → "-").
+- [ ] Live Steam Market price lookup, cache, and refresh.
 - [ ] Currency conversion and locale-aware formatting.
 - [ ] Per-item, grouped, inventory, and storage-unit valuations.
 - [ ] Overview page with totals and breakdowns.

@@ -244,6 +244,7 @@ dependencies = [
  "domain",
  "gc-cs2",
  "item-schema",
+ "pricing",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -903,6 +904,7 @@ dependencies = [
  "egui-phosphor",
  "egui_extras",
  "image",
+ "pricing",
  "qrcode",
  "reqwest 0.13.5",
  "tokio",
@@ -3936,6 +3938,10 @@ checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 [[package]]
 name = "pricing"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "proc-macro-crate"

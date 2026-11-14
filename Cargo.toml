@@ -9,6 +9,7 @@ egui_extras = "0.33.3"
 egui-phosphor = "0.11"
 domain = { path = "crates/domain" }
 app-commands = { path = "crates/app-commands" }
+pricing = { path = "crates/pricing" }
 app-core = { path = "crates/app-core" }
 qrcode = { version = "0.14", default-features = false }
 image = "0.25"

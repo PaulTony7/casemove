@@ -176,6 +176,10 @@ pub struct InventoryItem {
     pub equipped_ct: bool,
     #[serde(default)]
     pub equipped_t: bool,
+    /// Selected-source price in USD for moveable items (legacy prices only
+    /// moveable rows); `None` when the source has no value.
+    #[serde(default)]
+    pub price: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

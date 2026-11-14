@@ -12,6 +12,7 @@ steam-core = { path = "../steam-core" }
 gc-cs2 = { path = "../gc-cs2" }
 item-schema = { path = "../item-schema" }
 domain = { path = "../domain" }
+pricing = { path = "../pricing" }
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tokio-stream = "0.1"
