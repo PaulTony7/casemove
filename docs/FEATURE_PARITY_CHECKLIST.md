@@ -1,10 +1,9 @@
 # Feature Parity Checklist
 
-Snapshot: 2026-11-13. Compared against the legacy application and the current
-Rust working tree, including the pending storage-contents integration.
+Snapshot: 2026-11-14. Compared against the legacy application and the current
+Rust working tree. Only outstanding work is listed — completed parity rows
+live in git history.
 
-- `[x]` means an initial Rust implementation exists. It does **not** mean full
-  legacy parity, live Steam verification, or that the change is committed.
 - `[ ]` means implementation or the specifically named verification remains.
 - Sections group related work; their order is **not a priority ranking**.
 - Keep legacy workflows until replacement behavior and characterization tests
@@ -13,81 +12,31 @@ Rust working tree, including the pending storage-contents integration.
 
 ## Application And Build
 
-- [x] Rust workspace with Tauri 2 and Leptos frontend.
-- [x] Casemove branding, legacy-style dark shell, and responsive navigation.
-- [x] Windows executable and MSI/NSIS packaging.
-- [x] Documented build tools and declared WASM target.
+- [ ] Windows executable and installer packaging for the eframe app (the
+  Tauri MSI/NSIS path was removed in the native-UI pivot).
 - [ ] Custom Windows titlebar and minimize/maximize/close controls.
 - [ ] Update checks, update status, and restart/download workflow.
 - [ ] Verify macOS Intel and Apple Silicon packaging.
-- [ ] Verify Linux packaging and webview behavior.
+- [ ] Verify Linux packaging and native rendering behavior.
 
 ## Login And Accounts
 
-- [x] Password login through the native Steam client adapter.
-- [x] Supplied email/device Steam Guard code and mobile-approval handling.
-- [x] Login progress, actionable errors, timeout, and cancellation.
-- [x] Retained session, sign-out, and rejection of late replies after re-login.
-- [x] Clear password/code input fields on submission; zeroize owned native credentials.
-- [x] List, select, and remove saved-account metadata; selection fills the username.
-- [x] Native keyring wrapper integrated with opt-in remembered login.
-- [x] Remember login using refresh tokens stored in the OS keyring (initial implementation; live verification pending).
-- [x] Sign in using a saved account without entering password/Guard again (initial implementation; live verification pending).
-- [x] Shared-secret/TOTP login with validated Base64 input and local device-code generation (live verification pending).
-- [x] QR challenge, approval, cancellation, and retry workflow (initial implementation; live verification pending).
-- [x] Browser-token login and input validation (initial implementation; live verification pending).
-- [x] Profile avatars and display names fetched post-login from steamcommunity (XML first; HTML profile-page fallback for profiles the XML endpoint leaves empty, as on unset profiles); falls back to the account name when both sources lack an identity.
-- [x] Wallet balance from `CMsgClientWalletInfoUpdate` (raw cents ÷ 100, legacy currency-code map) in login replies and `wallet:changed` events (initial implementation; live verification pending).
-- [x] Saved-account ordering controls. Legacy account-limit behavior remains to verify.
 - [ ] Steam-client-open prompt and close/continue handling.
 - [ ] Automatic Steam/GC reconnection and accurate connection-loss status.
 
 ## Inventory And Item Data
 
-- [x] Explicit CS2 GC connection and bounded inventory-snapshot requests.
-- [x] Legacy-compatible explicit ClientHello fields for attach and refresh.
-- [x] Typed economy-cache decoding with corruption, duplicate-ID, and size checks.
-- [x] Preserve 64-bit item IDs as strings across IPC.
-- [x] Session-scoped GC ownership and cancellation of inventory work on sign-out.
-- [x] Exclude reward-preview objects from owned inventory.
-- [x] Exclude storage-unit-contained items (casket attributes 272/273) and the legacy placeholder IDs from the main inventory; the storage-contents view keeps contained items, like legacy `isCasket`.
-- [x] Legacy position semantics: new-flag bit → 0, low-16-bit mask, 9999 default for a missing position (golden vectors from globaloffensive).
-- [x] Bundled weapon/paint names, prefab inheritance, and unknown-item fallbacks.
-- [x] Exact thumbnails from the bundled image catalog with fallback icons.
-- [x] Display nametags, rarity, wear/float, paint seed, quantity, and StatTrak presence.
-- [x] Inventory search by name, nametag, and item ID.
-- [x] Basic position, name, rarity, and float sorting.
-- [x] Storage-unit-only filter and 50-row inventory pagination.
-- [x] Refresh errors preserve the last displayed snapshot.
 - [ ] Incremental SO-cache create/update/remove handling and automatic UI updates.
-- [x] Group equivalent items, retain their individual IDs, and show combined quantities (legacy `combineInventory` key: name, nametag, image URL, wear name, exact float).
-- [x] Quantity sort (descending over combined quantities, normalized-name tie-break).
-- [x] Category and subcategory classification/filtering (legacy `getCategory`:8 URL-based categories first-match in legacy order, majors by lowest-name-position match; category/rarity/major filter chips with OR-within/AND-across semantics).
-- [x] Rarity-selection filter (tier names via the shared rarity labels).
-- [x] Item-property filters (tradehold, nametag, storage-moveable, equipped CT/T; OR within the group like the other chip groups).
 - [ ] Sticker/patch property filter (lands with sticker metadata below).
-- [x] Category sort (ascending, uncategorized first, normalized-name tie-break).
-- [x] Tradehold sort (no-tradehold items first, then soonest unlock, normalized-name tie-break).
 - [ ] Collection, sticker, and storage-name sorts.
-- [x] Price sort (unpriced first, then ascending price × combined quantity, normalized-name tie-break).
-- [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
-- [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.
 - [ ] Music-kit, graffiti/tint, agent, and other specialized-item enrichment.
 - [ ] Collection metadata and trade-up eligibility.
-- [x] Tradehold/unlock dates (attr 75 raw-seconds → future-only `trade_unlock`, "N days" badge in the table), origin, moveability (full legacy rule chain + star/pin/music-kit overrides), and equipped state (equipped_state class 2→T, 3→CT); origin stays internal, driving the moveable rules.
 - [ ] Complete image coverage and live schema refresh with bundled fallback.
 - [ ] Configurable inventory columns.
 
 ## Storage Units
 
-- [x] Open a storage unit's contents from its inventory row.
-- [x] Validate storage IDs against the current session inventory.
-- [x] Read expected contents count from attribute 270.
-- [x] Collect matching GC objects and wait for notification/count completion.
-- [x] Distinguish empty units, incomplete results, invalid requests, and timeouts.
-- [x] Reject overlapping native inventory/contents requests and discard stale UI replies.
-- [x] Display read-only contents and return to inventory.
 - [ ] Search, filter, and sort storage contents.
 - [ ] Pagination or virtualization for storage contents.
 - [ ] Load all storage units and aggregate their contents.
@@ -114,21 +63,14 @@ Rust working tree, including the pending storage-contents integration.
 
 ## Settings And Persistence
 
-- [x] Persistent JSON settings store with dot-path access.
-- [x] Legacy preferences/account-metadata migration without copying encrypted secrets.
-- [x] Preserve existing Rust settings and avoid reimporting deleted profiles.
 - [ ] Settings page and typed settings get/set commands.
 - [ ] Persist column, currency, price-source, and relevant workflow preferences.
 - [ ] Steam-close prompt preference and developer-mode controls.
-- [x] Keyring cleanup when a remembered account is removed, with rollback on metadata-write failure.
 - [ ] Verify real OS-keyring and legacy-migration behavior on supported platforms.
 
 ## Pricing, Overview, And Reports
 
-- [x] Price resolution from the bundled legacy snapshot (key quirks, steam window priority, zeros fallback, unpriced → "-").
-- [x] Live Steam Market price lookup, cache, and refresh (auto after inventory/storage load plus a Refresh prices button; 24h disk-backed overlay in `prices-live.json`, steam_listing source, throttle stops the batch).
 - [ ] Currency conversion and locale-aware formatting.
-- [x] Per-item, grouped, inventory, and storage-unit valuations (combined price cell, inventory total, open-unit contents value).
 - [ ] Overview page with totals and breakdowns.
 - [ ] Overview charts and grouping controls.
 - [ ] CSV export covering inventory/storage, prices, quantities, wear, and stickers.
@@ -143,10 +85,6 @@ Rust working tree, including the pending storage-contents integration.
 
 ## Verification And Release Gates
 
-- [x] Offline tests for implemented protocol, lifecycle, migration, and schema slices.
-- [x] Current workspace test and warnings-as-errors Clippy checks pass.
-- [x] WASM/frontend build and Windows packaging checked.
-- [x] Browser IPC-double checks for the initial inventory UI; not native IPC proof.
 - [ ] Confirm the ClientHello correction resolves the reported live inventory timeout.
 - [ ] Verify OS-keyring save/read/delete and remembered-login reuse after restart with a real account.
 - [ ] Verify shared-secret login, email-only challenges, clock skew, and code rollover against a real account.
@@ -154,9 +92,8 @@ Rust working tree, including the pending storage-contents integration.
 - [ ] Verify empty and non-empty storage units through native IPC and the live GC.
 - [ ] Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - [ ] Verify moves/removals during storage loading and notification ordering.
-- [ ] Review and commit the pending storage-contents slice independently.
 - [ ] Golden characterization fixtures for conversion, grouping, filters, sorts, and trade-ups.
-- [ ] CI for workspace tests, Clippy, and WASM checks.
+- [ ] CI for workspace tests and Clippy checks.
 - [ ] Startup, filtering, bulk-move, memory, listener-count, and installer-size metrics.
 - [ ] Re-login/disconnect/reconnect soak tests with stable dispatcher/listener counts.
 - [ ] Platform packaging/signing and final migration/parity sign-off before deleting legacy.
