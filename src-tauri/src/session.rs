@@ -34,42 +34,80 @@ fn profile_reply(profile: Profile) -> SteamProfile {
     }
 }
 
+fn extract_between(haystack: &str, open: &str, close: &str) -> Option<String> {
+    let start = haystack.find(open)? + open.len();
+    let end = start + haystack[start..].find(close)?;
+    Some(haystack[start..end].trim().to_owned())
+}
+
+fn decode_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = start + xml[start..].find(&close)?;
-    let value = xml[start..end].trim();
+    let value = extract_between(xml, &open, &close)?;
     if let Some(inner) = value
         .strip_prefix("<![CDATA[")
         .and_then(|rest| rest.strip_suffix("]]>"))
     {
         return Some(inner.to_owned());
     }
-    Some(
-        value
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'"),
-    )
+    Some(decode_entities(&value))
 }
 
-async fn fetch_steam_identity(
-    steam_id: &str,
-) -> Option<(Option<String>, Option<String>)> {
+/// Persona name from the HTML profile page — the XML endpoint leaves
+/// `steamID` empty for profiles Steam considers "not set up".
+fn extract_persona_name(html: &str) -> Option<String> {
+    let marker = "actual_persona_name\">";
+    let start = html.find(marker)? + marker.len();
+    let end = start + html[start..].find('<')?;
+    let name = decode_entities(html[start..end].trim());
+    (!name.is_empty()).then_some(name)
+}
+
+/// First avatar image reference in the HTML page (`srcset`/`src`), checked
+/// against the Steam-host allowlist.
+fn extract_avatar_url(html: &str) -> Option<String> {
+    let start = html.find("https://avatars.")?;
+    let rest = &html[start..];
+    let end = rest.find(|c: char| c == '"' || c == '\'' || c.is_whitespace())?;
+    let url = &rest[..end];
+    crate::accounts::is_steam_avatar_url(url).then(|| url.to_owned())
+}
+
+async fn http_text(url: &str) -> Option<String> {
+    let response = reqwest::get(url).await.ok()?.error_for_status().ok()?;
+    response.text().await.ok()
+}
+
+async fn fetch_steam_identity(steam_id: &str) -> Option<(Option<String>, Option<String>)> {
     let fetch = async {
-        let url = format!("https://steamcommunity.com/profiles/{steam_id}/?xml=1");
-        let response = reqwest::get(&url).await.ok()?.error_for_status().ok()?;
-        let xml = response.text().await.ok()?;
-        let display_name = extract_tag(&xml, "steamID").filter(|name| !name.is_empty());
-        let avatar = extract_tag(&xml, "avatarMedium")
+        let xml = http_text(&format!(
+            "https://steamcommunity.com/profiles/{steam_id}/?xml=1"
+        ))
+        .await?;
+        let mut display_name = extract_tag(&xml, "steamID").filter(|name| !name.is_empty());
+        let mut avatar = extract_tag(&xml, "avatarMedium")
             .filter(|url| crate::accounts::is_steam_avatar_url(url));
+        if display_name.is_none() || avatar.is_none() {
+            if let Some(html) =
+                http_text(&format!("https://steamcommunity.com/profiles/{steam_id}/")).await
+            {
+                display_name = display_name.or_else(|| extract_persona_name(&html));
+                avatar = avatar.or_else(|| extract_avatar_url(&html));
+            }
+        }
         Some((display_name, avatar))
     };
-    tokio::time::timeout(Duration::from_secs(5), fetch)
+    tokio::time::timeout(Duration::from_secs(8), fetch)
         .await
         .ok()
         .flatten()
@@ -151,6 +189,14 @@ async fn enrich_reply(
         reply.display_name = display_name;
         reply.avatar_url = avatar_url;
     }
+
+    eprintln!(
+        "casemove enrich: wallet_stream={} wallet_first={} display_name={} avatar={}",
+        stream.is_some(),
+        reply.wallet.is_some(),
+        reply.display_name.is_some(),
+        reply.avatar_url.is_some(),
+    );
 
     with_profile(&app.state::<ProfileState>().0, |profile| {
         *profile = Some(reply.clone());
@@ -452,6 +498,38 @@ mod tests {
         let xml = "<profile><steamID64>1</steamID64><steamID><![CDATA[]]></steamID></profile>";
         assert_eq!(extract_tag(xml, "steamID").as_deref(), Some(""));
         assert_eq!(extract_tag(xml, "avatarMedium"), None);
+    }
+
+    #[test]
+    fn html_fallback_extracts_persona_and_avatar_for_unset_profiles() {
+        let html = r#"<html><body>
+            <img srcset="https://avatars.fastly.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg 1.5x, https://avatars.fastly.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg 2x" src="https://avatars.fastly.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_medium.jpg">
+            <span class="actual_persona_name">spiderman_is_me_adam</span>
+        </body></html>"#;
+        assert_eq!(
+            extract_persona_name(html).as_deref(),
+            Some("spiderman_is_me_adam")
+        );
+        assert_eq!(
+            extract_avatar_url(html).as_deref(),
+            Some("https://avatars.fastly.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg")
+        );
+
+        assert_eq!(
+            extract_persona_name(r#"<span class="actual_persona_name">Bob &amp; Co</span>"#)
+                .as_deref(),
+            Some("Bob & Co")
+        );
+        assert_eq!(
+            extract_persona_name(r#"<span class="actual_persona_name"></span>"#),
+            None
+        );
+        // Only allowlisted Steam hosts survive.
+        assert_eq!(
+            extract_avatar_url(r#"<img src="https://avatars.evil.example/x.jpg">"#),
+            None
+        );
+        assert_eq!(extract_avatar_url(r#"<img src="https://evil.example/x.jpg">"#), None);
     }
 
     #[test]

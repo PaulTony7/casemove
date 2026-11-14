@@ -36,7 +36,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Shared-secret/TOTP login with validated Base64 input and local device-code generation (live verification pending).
 - [x] QR challenge, approval, cancellation, and retry workflow (initial implementation; live verification pending).
 - [x] Browser-token login and input validation (initial implementation; live verification pending).
-- [x] Profile avatars and display names fetched post-login from steamcommunity XML (allowlisted hosts, including the current fastly CDN); falls back to the account name for limited profiles.
+- [x] Profile avatars and display names fetched post-login from steamcommunity (XML first; HTML profile-page fallback for profiles the XML endpoint leaves empty, as on unset profiles); falls back to the account name when both sources lack an identity.
 - [x] Wallet balance from `CMsgClientWalletInfoUpdate` (raw cents ÷ 100, legacy currency-code map) in login replies and `wallet:changed` events (initial implementation; live verification pending).
 - [x] Saved-account ordering controls. Legacy account-limit behavior remains to verify.
 - [ ] Steam-client-open prompt and close/continue handling.
@@ -64,7 +64,7 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Quantity sort (descending over combined quantities, normalized-name tie-break).
 - [ ] Category and subcategory classification/filtering.
 - [ ] Rarity-selection and item-property filters, including tradehold and stickers.
-- [ ] Quantity, price, category, collection, sticker, tradehold, and storage-name sorts.
+- [ ] Price, category, collection, sticker, tradehold, and storage-name sorts.
 - [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
 - [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.

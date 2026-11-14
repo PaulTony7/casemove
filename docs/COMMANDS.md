@@ -33,10 +33,14 @@ Conventions:
 
 All login replies are `SteamProfile { account, steam_id, notice?, display_name?,
 avatar_url?, wallet? }`. The three optional fields are filled by post-login
-enrichment: `wallet` from the CM's `CMsgClientWalletInfoUpdate` (first message
-waited on for ≤3 s, then forwarded as `wallet:changed`), identity from the
-steamcommunity `?xml=1` profile (allowlisted avatar hosts). Enrichment is
-best-effort and never fails a login; the snapshot is retained for
+enrichment: `wallet` from the CM's `CMsgClientWalletInfoUpdate` (the
+subscription is registered first, then steam-vent's unprocessed buffer is
+drained for the post-logon push that arrived early; the first message is
+waited on for ≤3 s, later ones forward as `wallet:changed`), identity from the
+steamcommunity `?xml=1` profile with an HTML profile-page fallback (the XML
+endpoint omits identity on profiles Steam considers unset; allowlisted avatar
+hosts only). Enrichment is best-effort, never fails a login, and logs one
+`casemove enrich:` line per login for diagnosis; the snapshot is retained for
 `steam_session` after a frontend reload.
 | `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
 | `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | Kill local Steam client (Windows only in legacy) | ☐ |

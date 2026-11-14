@@ -116,15 +116,32 @@ impl WalletInfoUpdate {
     }
 }
 
-/// Subscribes to wallet updates on a live connection.
+/// Subscribes to wallet updates, recovering any message that arrived before
+/// the subscription: the CM pushes `ClientWalletInfoUpdate` right after
+/// logon, and steam-vent buffers unmatched messages (32-slot ring) that late
+/// subscriptions never see.
 pub fn wallet_stream(
     connection: &steam_vent::Connection,
 ) -> std::pin::Pin<Box<dyn Stream<Item = WalletUpdate> + Send>> {
-    Box::pin(
-        connection
-            .on::<WalletInfoUpdate>()
-            .filter_map(|result| result.ok().map(WalletInfoUpdate::into_update)),
-    )
+    let subscribed = connection
+        .on::<WalletInfoUpdate>()
+        .filter_map(|result| result.ok().map(WalletInfoUpdate::into_update));
+    let buffered = buffered_wallet_updates(connection);
+    Box::pin(tokio_stream::iter(buffered).chain(subscribed))
+}
+
+/// Drains the unprocessed buffer for wallet messages. The drain drops any
+/// other buffered message; at enrichment time those are only post-logon
+/// pushes nothing in this app listens to (GC traffic starts later, when the
+/// inventory attaches).
+fn buffered_wallet_updates(connection: &steam_vent::Connection) -> Vec<WalletUpdate> {
+    connection
+        .take_unprocessed()
+        .into_iter()
+        .filter(|raw| raw.kind == EMsg::k_EMsgClientWalletInfoUpdate)
+        .filter_map(|raw| raw.into_message::<WalletInfoUpdate>().ok())
+        .map(WalletInfoUpdate::into_update)
+        .collect()
 }
 
 #[cfg(test)]
