@@ -17,6 +17,39 @@ fn rarity_name(rarity: u32) -> &'static str {
     }
 }
 
+/// Legacy base-sort key: `item_name.replaceAll('★','').replaceAll(' ','')`.
+fn normalized_name(name: &str) -> String {
+    name.replace('★', "").replace(' ', "")
+}
+
+/// Sort parity with legacy `sortDataFunction`: every mode sits on top of the
+/// star-stripped, space-stripped name comparison (the legacy base sort, which
+/// JS stability turns into the tie-breaker), rarity ascends (missing-first in
+/// legacy ascending order), and wear descends with unknown wear last.
+fn sort_rows(items: &mut [InventoryItem], mode: &str) {
+    fn by_name(left: &InventoryItem, right: &InventoryItem) -> std::cmp::Ordering {
+        normalized_name(&left.name).cmp(&normalized_name(&right.name))
+    }
+    match mode {
+        "name" => items.sort_by(|left, right| {
+            by_name(left, right).then_with(|| left.id.cmp(&right.id))
+        }),
+        "rarity" => items.sort_by(|left, right| {
+            left.rarity.cmp(&right.rarity).then_with(|| by_name(left, right))
+        }),
+        "wear" => items.sort_by(|left, right| {
+            right
+                .wear
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&left.wear.unwrap_or(f64::NEG_INFINITY))
+                .then_with(|| by_name(left, right))
+        }),
+        _ => items.sort_by(|left, right| {
+            left.position.cmp(&right.position).then_with(|| by_name(left, right))
+        }),
+    }
+}
+
 #[component]
 fn InventoryRow(
     item: InventoryItem,
@@ -104,23 +137,7 @@ pub fn InventoryView(
                             .is_some_and(|name| name.to_lowercase().contains(&query)))
             })
             .collect();
-        match sort.get().as_str() {
-            "name" => {
-                items.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)))
-            }
-            "rarity" => items.sort_by(|left, right| {
-                right
-                    .rarity
-                    .cmp(&left.rarity)
-                    .then(left.name.cmp(&right.name))
-            }),
-            "wear" => items.sort_by(|left, right| {
-                left.wear
-                    .unwrap_or(f64::INFINITY)
-                    .total_cmp(&right.wear.unwrap_or(f64::INFINITY))
-            }),
-            _ => items.sort_by_key(|item| item.position),
-        }
+        sort_rows(&mut items, &sort.get());
         items
     });
     let pages = Memo::new(move |_| filtered.with(|items| items.len().div_ceil(PAGE_SIZE).max(1)));
@@ -233,5 +250,90 @@ pub fn InventoryView(
             </Show>
             </Show>
         </main>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: u64, name: &str, position: u32, rarity: u32, wear: Option<f64>) -> InventoryItem {
+        InventoryItem {
+            id: id.to_string(),
+            definition_index: 7,
+            name: name.to_owned(),
+            custom_name: None,
+            image_url: None,
+            quantity: 1,
+            rarity,
+            position,
+            wear,
+            wear_name: None,
+            paint_seed: None,
+            stat_trak: false,
+            is_storage_unit: false,
+        }
+    }
+
+    fn names(items: &[InventoryItem]) -> Vec<&str> {
+        items.iter().map(|item| item.name.as_str()).collect()
+    }
+
+    #[test]
+    fn name_sort_strips_stars_and_spaces_then_breaks_ties_by_id() {
+        let mut items = vec![
+            row(9, "★ Bayonet", 0, 5, None),
+            row(2, "AK-47 Redline", 0, 5, None),
+            row(1, "AK 47", 0, 5, None),
+        ];
+        sort_rows(&mut items, "name");
+        // Star/space stripping matches legacy; remaining compare is plain
+        // byte order ("AK-47…" < "AK47" because '-' < '4').
+        assert_eq!(
+            names(&items),
+            vec!["AK-47 Redline", "AK 47", "★ Bayonet"]
+        );
+        // Equal normalized names fall back to id ordering (legacy Default).
+        let mut tied = vec![row(7, "★ Awp", 0, 5, None), row(3, "Awp", 0, 5, None)];
+        sort_rows(&mut tied, "name");
+        assert_eq!(tied[0].id, "3");
+        assert_eq!(tied[1].id, "7");
+    }
+
+    #[test]
+    fn position_sort_is_ascending_with_normalized_name_tie_breaks() {
+        let mut items = vec![
+            row(1, "Zebra", 5, 5, None),
+            row(2, "★ Apple", 5, 5, None),
+            row(3, "Mango", 1, 5, None),
+        ];
+        sort_rows(&mut items, "position");
+        assert_eq!(names(&items), vec!["Mango", "★ Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn rarity_sorts_ascending_like_legacy() {
+        let mut items = vec![
+            row(1, "Covert", 0, 6, None),
+            row(2, "Consumer", 0, 1, None),
+            row(3, "Restricted", 0, 4, None),
+        ];
+        sort_rows(&mut items, "rarity");
+        assert_eq!(names(&items), vec!["Consumer", "Restricted", "Covert"]);
+    }
+
+    #[test]
+    fn wear_sorts_descending_with_unknown_wear_last() {
+        let mut items = vec![
+            row(1, "Factory New", 0, 5, Some(0.03)),
+            row(2, "No wear data", 0, 5, None),
+            row(3, "Battle", 0, 5, Some(0.61)),
+            row(4, "Well-Worn", 0, 5, Some(0.42)),
+        ];
+        sort_rows(&mut items, "wear");
+        assert_eq!(
+            names(&items),
+            vec!["Battle", "Well-Worn", "Factory New", "No wear data"]
+        );
     }
 }

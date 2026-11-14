@@ -78,6 +78,22 @@ fn attribute_integer(item: &EconItem, index: u32) -> Option<u32> {
     (value >= 0.0 && value < u32::MAX as f32 && value.fract() == 0.0).then_some(value as u32)
 }
 
+/// Legacy converter drops items stored inside storage units and two
+/// placeholder IDs, in every conversion path.
+const EXCLUDED_ITEM_IDS: [u64; 2] = [17293822569110896676, 17293822569102708641];
+
+/// An item contained in a casket carries both halves of its casket ID
+/// (attributes 272/273), matching globaloffensive's `casket_id` detection.
+fn is_casket_contained(item: &EconItem) -> bool {
+    item.attributes
+        .iter()
+        .any(|attribute| attribute.definition_index == 272)
+        && item
+            .attributes
+            .iter()
+            .any(|attribute| attribute.definition_index == 273)
+}
+
 fn wear_name(wear: f64) -> &'static str {
     if wear <= 0.07 {
         "Factory New"
@@ -99,24 +115,61 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
         .filter(|wear| (0.0..=1.0).contains(wear));
     let paint_seed = attribute_integer(&item, 7);
     let description = schema.describe(item.definition_index, paint);
+    let stat_trak = item
+        .attributes
+        .iter()
+        .any(|attribute| attribute.definition_index == 80);
+    // Legacy naming order: Souvenir inside the name processor, then the
+    // StatTrak prefix, then the star for unusual-quality (knife) items.
+    let mut name = description.name;
+    if item.definition_index == 140 && !name.contains("Souvenir") {
+        name = format!("Souvenir {name}");
+    }
+    if stat_trak {
+        name = format!("StatTrak™ {name}");
+    }
+    if item.quality == 3 {
+        name = format!("★ {name}");
+    }
+    let position = item.legacy_position();
     InventoryItem {
         id: item.id.to_string(),
         definition_index: item.definition_index,
-        name: description.name,
+        name,
         custom_name: item.custom_name,
         image_url: description.image_url,
         quantity: item.quantity,
         rarity: item.rarity,
-        position: item.inventory_position,
+        position,
         wear,
         wear_name: wear.map(|wear| wear_name(wear).to_owned()),
         paint_seed,
-        stat_trak: item
-            .attributes
-            .iter()
-            .any(|attribute| attribute.definition_index == 80),
+        stat_trak,
         is_storage_unit: item.definition_index == 1201,
     }
+}
+
+/// Converts GC items into inventory rows, applying the legacy conversion
+/// filters. `include_casket` keeps items contained in storage units, which the
+/// storage-contents view needs but the main inventory must hide.
+fn to_rows(
+    items: Vec<EconItem>,
+    schema: &ItemSchema,
+    include_casket: bool,
+) -> Result<Vec<InventoryItem>, String> {
+    let mut rows = Vec::with_capacity(items.len());
+    for item in items {
+        if EXCLUDED_ITEM_IDS.contains(&item.id) {
+            continue;
+        }
+        if !include_casket && is_casket_contained(&item) {
+            continue;
+        }
+        if is_owned_item(&item)? {
+            rows.push(enrich_item(item, schema));
+        }
+    }
+    Ok(rows)
 }
 
 fn parse_storage_id(value: &str) -> Result<u64, String> {
@@ -196,12 +249,7 @@ pub async fn refresh_inventory(
                     .ok_or_else(|| "The Steam session changed. Load inventory again.".to_owned())?;
                 items
             };
-            let mut rows = Vec::with_capacity(items.len());
-            for item in items {
-                if is_owned_item(&item)? {
-                    rows.push(enrich_item(item, &schema));
-                }
-            }
+            let rows = to_rows(items, &schema, false)?;
             Ok(InventorySnapshot {
                 steam_id: connection.steam_id(),
                 items: rows,
@@ -239,13 +287,7 @@ pub async fn storage_contents(
                 .storage_contents(casket_id, expected_count)
                 .await
                 .map_err(storage_contents_error)?;
-            let mut rows = Vec::with_capacity(items.len());
-            for item in items {
-                if is_owned_item(&item)? {
-                    rows.push(enrich_item(item, schema));
-                }
-            }
-            Ok(rows)
+            to_rows(items, schema, true)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -260,7 +302,7 @@ mod tests {
         EconItem {
             id: u64::MAX - 1,
             definition_index: 7,
-            inventory_position: 1,
+            inventory_position: Some(1),
             quantity: 1,
             quality: 0,
             rarity: 5,
@@ -379,5 +421,105 @@ mod tests {
         assert_eq!(is_owned_item(&source), Ok(true));
         source.attributes.last_mut().unwrap().value = vec![1];
         assert!(is_owned_item(&source).is_err());
+    }
+
+    #[test]
+    fn casket_items_and_legacy_placeholders_are_hidden_from_the_main_inventory_only() {
+        let schema = ItemSchema::bundled().unwrap();
+        let mut contained = item();
+        contained.id = 100;
+        contained.attributes.push(ItemAttribute {
+            definition_index: 272,
+            value: vec![1, 0, 0, 0],
+        });
+        contained.attributes.push(ItemAttribute {
+            definition_index: 273,
+            value: vec![0, 0, 0, 0],
+        });
+        assert!(is_casket_contained(&contained));
+
+        // One half alone is not a casket reference (globaloffensive requires both).
+        let mut half = item();
+        half.id = 101;
+        half.attributes.push(ItemAttribute {
+            definition_index: 272,
+            value: vec![1, 0, 0, 0],
+        });
+        assert!(!is_casket_contained(&half));
+
+        let mut placeholder = item();
+        placeholder.id = EXCLUDED_ITEM_IDS[0];
+
+        let main = to_rows(
+            vec![contained.clone(), half.clone(), placeholder.clone()],
+            &schema,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            main.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec![(101u64).to_string()]
+        );
+
+        // The storage-contents view keeps casket contents (legacy isCasket),
+        // but the placeholder IDs are dropped in every path.
+        let storage = to_rows(vec![contained, placeholder], &schema, true).unwrap();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].id, (100u64).to_string());
+    }
+
+    #[test]
+    fn stattrak_star_and_souvenir_prefixes_follow_legacy_order() {
+        let schema = ItemSchema::bundled().unwrap();
+
+        let mut stattrak = item();
+        stattrak.attributes.push(ItemAttribute {
+            definition_index: 80,
+            value: vec![0],
+        });
+        let row = enrich_item(stattrak, &schema);
+        assert!(row.stat_trak);
+        assert_eq!(row.name, "StatTrak™ AK-47");
+
+        let mut star = item();
+        star.quality = 3;
+        let row = enrich_item(star, &schema);
+        assert_eq!(row.name, "★ AK-47");
+
+        // Both: star outside, exactly like the legacy converter's ordering.
+        let mut both = item();
+        both.quality = 3;
+        both.attributes.push(ItemAttribute {
+            definition_index: 80,
+            value: vec![0],
+        });
+        let row = enrich_item(both, &schema);
+        assert_eq!(row.name, "★ StatTrak™ AK-47");
+
+        let mut souvenir = item();
+        souvenir.definition_index = 140;
+        let row = enrich_item(souvenir, &schema);
+        assert!(
+            row.name.starts_with("Souvenir "),
+            "expected Souvenir prefix, got {}",
+            row.name
+        );
+    }
+
+    #[test]
+    fn enriched_rows_use_the_legacy_position_semantics() {
+        let schema = ItemSchema::bundled().unwrap();
+
+        let mut flagged = item();
+        flagged.inventory_position = Some((1 << 30) | 0x1234);
+        assert_eq!(enrich_item(flagged, &schema).position, 0);
+
+        let mut plain = item();
+        plain.inventory_position = Some(0x00AA_000C);
+        assert_eq!(enrich_item(plain, &schema).position, 0x000C);
+
+        let mut missing = item();
+        missing.inventory_position = None;
+        assert_eq!(enrich_item(missing, &schema).position, 9999);
     }
 }

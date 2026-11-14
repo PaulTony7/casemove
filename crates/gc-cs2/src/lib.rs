@@ -65,12 +65,30 @@ pub struct ItemAttribute {
 pub struct EconItem {
     pub id: u64,
     pub definition_index: u32,
-    pub inventory_position: u32,
+    /// Raw `CSOEconItem.inventory` value; `None` when the field is absent.
+    pub inventory_position: Option<u32>,
     pub quantity: u32,
     pub quality: u32,
     pub rarity: u32,
     pub custom_name: Option<String>,
     pub attributes: Vec<ItemAttribute>,
+}
+
+/// Legacy display/sort position, matching globaloffensive's
+/// `_processSOEconItem` (`(inventory >>> 30 & 1) ? 0 : inventory & 0xFFFF`)
+/// and the converter's default of 9999 when no position exists.
+pub fn position_from_inventory(raw: Option<u32>) -> u32 {
+    match raw {
+        None => 9999,
+        Some(raw) if (raw >> 30) & 1 == 1 => 0,
+        Some(raw) => raw & 0xFFFF,
+    }
+}
+
+impl EconItem {
+    pub fn legacy_position(&self) -> u32 {
+        position_from_inventory(self.inventory_position)
+    }
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -363,7 +381,7 @@ impl BrowserInventoryClient {
             Err(_) => return Err(InventoryError::TimedOut),
         }
         let mut items: Vec<_> = collector.items.into_values().collect();
-        items.sort_by_key(|item| (item.inventory_position, item.id));
+        items.sort_by_key(|item| (item.inventory_position.unwrap_or(u32::MAX), item.id));
         Ok(items)
     }
 }
@@ -415,7 +433,7 @@ fn parse_item(bytes: &[u8]) -> Result<EconItem, InventoryError> {
     Ok(EconItem {
         id: item.id(),
         definition_index: item.def_index(),
-        inventory_position: item.inventory(),
+        inventory_position: item.inventory,
         quantity: item.quantity.unwrap_or(1),
         quality: item.quality(),
         rarity: item.rarity(),
@@ -552,7 +570,7 @@ where
         Err(_) => return Err(InventoryError::TimedOut),
     }
     let mut items: Vec<_> = collector.items.into_values().collect();
-    items.sort_by_key(|item| (item.inventory_position, item.id));
+    items.sort_by_key(|item| (item.inventory_position.unwrap_or(u32::MAX), item.id));
     Ok(items)
 }
 
@@ -711,7 +729,7 @@ pub fn parse_inventory(welcome: &CMsgClientWelcome) -> Result<Vec<EconItem>, Inv
                 let item = EconItem {
                     id: item.id(),
                     definition_index: item.def_index(),
-                    inventory_position: item.inventory(),
+                    inventory_position: item.inventory,
                     quantity: item.quantity.unwrap_or(1),
                     quality: item.quality(),
                     rarity: item.rarity(),
@@ -735,7 +753,7 @@ pub fn parse_inventory(welcome: &CMsgClientWelcome) -> Result<Vec<EconItem>, Inv
         return Err(InventoryError::MissingCache);
     }
     let mut items: Vec<_> = items.into_values().collect();
-    items.sort_by_key(|item| (item.inventory_position, item.id));
+    items.sort_by_key(|item| (item.inventory_position.unwrap_or(u32::MAX), item.id));
     Ok(items)
 }
 
@@ -1073,5 +1091,49 @@ mod tests {
             (parsed.casket_item_id(), parsed.item_item_id()),
             (CASKET, CASKET)
         );
+    }
+
+    #[test]
+    fn legacy_position_masks_raw_inventory_like_globaloffensive() {
+        // Golden vectors from globaloffensive's _processSOEconItem plus the
+        // converter's 9999 default for a missing position.
+        assert_eq!(position_from_inventory(None), 9999);
+        // "new" flag (bit 30) forces position 0
+        assert_eq!(position_from_inventory(Some((1 << 30) | 0x1234)), 0);
+        assert_eq!(position_from_inventory(Some(1 << 30)), 0);
+        // plain positions pass through
+        assert_eq!(position_from_inventory(Some(0)), 0);
+        assert_eq!(position_from_inventory(Some(42)), 42);
+        // everything above the low 16 bits is masked off
+        assert_eq!(position_from_inventory(Some(0x00FF_0041)), 0x41);
+        assert_eq!(position_from_inventory(Some(0x3FFF_FFFF)), 0xFFFF);
+        // a raw value without the new flag but with high bits set
+        assert_eq!(position_from_inventory(Some(0x2000_0007)), 7);
+    }
+
+    #[test]
+    fn parsed_items_keep_raw_inventory_and_compute_legacy_position() {
+        let inventory = parse_inventory(&welcome(vec![
+            item(42, (1 << 30) | 9), // new-flagged
+            item(43, 0x10005),
+        ]))
+        .unwrap();
+        let flagged = inventory.iter().find(|item| item.id == 42).unwrap();
+        assert_eq!(flagged.inventory_position, Some((1 << 30) | 9));
+        assert_eq!(flagged.legacy_position(), 0);
+        let plain = inventory.iter().find(|item| item.id == 43).unwrap();
+        assert_eq!(plain.legacy_position(), 5);
+
+        // An item without the inventory field keeps None -> 9999.
+        let bytes = CSOEconItem {
+            id: Some(44),
+            def_index: Some(7),
+            ..Default::default()
+        }
+        .write_to_bytes()
+        .unwrap();
+        let inventory = parse_inventory(&welcome(vec![bytes])).unwrap();
+        assert_eq!(inventory[0].inventory_position, None);
+        assert_eq!(inventory[0].legacy_position(), 9999);
     }
 }

@@ -50,6 +50,8 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Preserve 64-bit item IDs as strings across IPC.
 - [x] Session-scoped GC ownership and cancellation of inventory work on sign-out.
 - [x] Exclude reward-preview objects from owned inventory.
+- [x] Exclude storage-unit-contained items (casket attributes 272/273) and the legacy placeholder IDs from the main inventory; the storage-contents view keeps contained items, like legacy `isCasket`.
+- [x] Legacy position semantics: new-flag bit → 0, low-16-bit mask, 9999 default for a missing position (golden vectors from globaloffensive).
 - [x] Bundled weapon/paint names, prefab inheritance, and unknown-item fallbacks.
 - [x] Exact thumbnails from the bundled image catalog with fallback icons.
 - [x] Display nametags, rarity, wear/float, paint seed, quantity, and StatTrak presence.
@@ -62,8 +64,8 @@ Rust working tree, including the pending storage-contents integration.
 - [ ] Category and subcategory classification/filtering.
 - [ ] Rarity-selection and item-property filters, including tradehold and stickers.
 - [ ] Quantity, price, category, collection, sticker, tradehold, and storage-name sorts.
-- [ ] Match legacy name normalization, sort direction, and tie-breaking behavior.
-- [ ] Full StatTrak, Souvenir, and knife-name formatting.
+- [x] Match legacy name normalization, sort direction, and tie-breaking behavior (star/space-stripped name underlay, rarity ascending, wear descending with unknown last).
+- [x] Full StatTrak, Souvenir, and knife-name formatting (legacy prefix order: Souvenir → StatTrak™ → ★).
 - [ ] Sticker/patch metadata, images, and applied-item details.
 - [ ] Music-kit, graffiti/tint, agent, and other specialized-item enrichment.
 - [ ] Collection metadata and trade-up eligibility.
