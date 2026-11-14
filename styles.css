@@ -206,3 +206,9 @@ textarea { resize: vertical; min-height: 100px; }
   .inventory-toolbar select { margin-left: auto; }
   .inventory-header h1 { font-size: 24px; }
 }
+
+/* Session identity + wallet balance (login enrichment) */
+img.avatar.account-avatar { object-fit: cover; }
+.session-summary .wallet-balance { display: block; }
+.session-details .wallet-balance { margin-top: 8px; }
+.session-details img.avatar { margin: 0 auto 12px; }

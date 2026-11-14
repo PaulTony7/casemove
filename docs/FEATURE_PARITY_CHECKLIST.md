@@ -36,7 +36,8 @@ Rust working tree, including the pending storage-contents integration.
 - [x] Shared-secret/TOTP login with validated Base64 input and local device-code generation (live verification pending).
 - [x] QR challenge, approval, cancellation, and retry workflow (initial implementation; live verification pending).
 - [x] Browser-token login and input validation (initial implementation; live verification pending).
-- [x] Profile avatars and display names from allowlisted Steam metadata.
+- [x] Profile avatars and display names fetched post-login from steamcommunity XML (allowlisted hosts, including the current fastly CDN); falls back to the account name for limited profiles.
+- [x] Wallet balance from `CMsgClientWalletInfoUpdate` (raw cents ÷ 100, legacy currency-code map) in login replies and `wallet:changed` events (initial implementation; live verification pending).
 - [x] Saved-account ordering controls. Legacy account-limit behavior remains to verify.
 - [ ] Steam-client-open prompt and close/continue handling.
 - [ ] Automatic Steam/GC reconnection and accurate connection-loss status.

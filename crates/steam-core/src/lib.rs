@@ -2,8 +2,10 @@
 
 mod live;
 mod totp;
+mod wallet;
 
 pub use live::{BrowserClientHandle, SteamClient, SteamConnection};
+pub use wallet::{WalletUpdate, currency_code, wallet_stream};
 
 use std::{future::Future, sync::Mutex, time::Duration};
 

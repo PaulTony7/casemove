@@ -1,29 +1,175 @@
 use app_commands::{
     BrowserTokenLoginParams, BrowserTokenPayload, LOGIN_QR_CHALLENGE, PasswordLoginParams,
-    SteamProfile,
+    SteamProfile, WALLET_CHANGED, WalletInfo,
 };
 use settings::SettingsStore;
-use std::sync::Mutex;
-use steam_core::{Credentials, Profile, SessionManager, SteamClient};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
+use steam_core::{Credentials, Profile, SessionManager, SteamClient, WalletUpdate};
 use tauri::{Emitter, Manager};
+use tokio_stream::StreamExt;
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) type DesktopSession = SessionManager<SteamClient>;
+
+/// Enriched session view (display name, avatar, wallet) kept current across
+/// UI reloads so `steam_session` can restore what login replies already had.
+#[derive(Default)]
+pub(crate) struct ProfileState(pub(crate) Mutex<Option<SteamProfile>>);
+
+fn with_profile<T>(state: &Mutex<Option<SteamProfile>>, f: impl FnOnce(&mut Option<SteamProfile>) -> T) -> T {
+    let mut guard: MutexGuard<'_, Option<SteamProfile>> =
+        state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard)
+}
 
 fn profile_reply(profile: Profile) -> SteamProfile {
     SteamProfile {
         account: profile.account,
         steam_id: profile.steam_id,
         notice: None,
+        display_name: None,
+        avatar_url: None,
+        wallet: None,
+    }
+}
+
+fn extract_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = start + xml[start..].find(&close)?;
+    let value = xml[start..end].trim();
+    if let Some(inner) = value
+        .strip_prefix("<![CDATA[")
+        .and_then(|rest| rest.strip_suffix("]]>"))
+    {
+        return Some(inner.to_owned());
+    }
+    Some(
+        value
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'"),
+    )
+}
+
+async fn fetch_steam_identity(
+    steam_id: &str,
+) -> Option<(Option<String>, Option<String>)> {
+    let fetch = async {
+        let url = format!("https://steamcommunity.com/profiles/{steam_id}/?xml=1");
+        let response = reqwest::get(&url).await.ok()?.error_for_status().ok()?;
+        let xml = response.text().await.ok()?;
+        let display_name = extract_tag(&xml, "steamID").filter(|name| !name.is_empty());
+        let avatar = extract_tag(&xml, "avatarMedium")
+            .filter(|url| crate::accounts::is_steam_avatar_url(url));
+        Some((display_name, avatar))
+    };
+    tokio::time::timeout(Duration::from_secs(5), fetch)
+        .await
+        .ok()
+        .flatten()
+}
+
+fn wallet_info(update: &WalletUpdate) -> WalletInfo {
+    WalletInfo {
+        has_wallet: update.has_wallet,
+        balance: update.balance,
+        currency: update.currency.clone(),
+    }
+}
+
+fn spawn_wallet_forwarder(
+    app: tauri::AppHandle,
+    generation: u64,
+    mut stream: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = WalletUpdate> + Send>>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(update) = stream.next().await {
+            let still_current = app
+                .state::<DesktopSession>()
+                .in_generation(generation, || ())
+                .is_ok();
+            if !still_current {
+                break;
+            }
+            let info = wallet_info(&update);
+            with_profile(&app.state::<ProfileState>().0, |profile| {
+                if let Some(profile) = profile {
+                    profile.wallet = Some(info.clone());
+                }
+            });
+            let _ = app.emit(WALLET_CHANGED, &info);
+        }
+    });
+}
+
+/// Best-effort enrichment: wallet balance + Steam community identity.
+/// Never fails a login; missing data stays `None` in the reply.
+async fn enrich_reply(
+    app: tauri::AppHandle,
+    session: &DesktopSession,
+    generation: u64,
+    reply: &mut SteamProfile,
+) {
+    let wallet_work = async {
+        let stream = session
+            .with_connection({
+                let expected = generation;
+                move |connection, current| async move {
+                    if current != expected {
+                        None
+                    } else {
+                        connection.wallet_stream()
+                    }
+                }
+            })
+            .await
+            .ok()
+            .flatten();
+        let Some(mut stream) = stream else {
+            return (None, None);
+        };
+        let first = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .ok()
+            .flatten();
+        (Some(stream), first)
+    };
+
+    let ((stream, first_wallet), identity) =
+        tokio::join!(wallet_work, fetch_steam_identity(&reply.steam_id));
+
+    if let Some(update) = first_wallet {
+        reply.wallet = Some(wallet_info(&update));
+    }
+    if let Some((display_name, avatar_url)) = identity {
+        reply.display_name = display_name;
+        reply.avatar_url = avatar_url;
+    }
+
+    with_profile(&app.state::<ProfileState>().0, |profile| {
+        *profile = Some(reply.clone());
+    });
+
+    if let Some(stream) = stream {
+        spawn_wallet_forwarder(app, generation, stream);
     }
 }
 
 async fn remember_session(
     app: tauri::AppHandle,
     session: &DesktopSession,
-    account: String,
+    reply: &SteamProfile,
     login_generation: u64,
 ) -> Result<(), String> {
+    let account = reply.account.clone();
+    let display_name = reply.display_name.clone();
+    let avatar_url = reply.avatar_url.clone();
     session
         .with_connection(|connection, generation| async move {
             if generation != login_generation {
@@ -45,7 +191,12 @@ async fn remember_session(
                 crate::accounts::remember_login(&mut store, &account, &token, |store| {
                     session
                         .in_generation(generation, || {
-                            crate::accounts::save_account_metadata(store, &account)
+                            crate::accounts::save_account_identity(
+                                store,
+                                &account,
+                                display_name.as_deref(),
+                                avatar_url.as_deref(),
+                            )
                         })
                         .map_err(|error| error.to_string())?
                 })
@@ -79,14 +230,9 @@ pub async fn steam_login(
         .map_err(|error| error.to_string())?;
     let login_generation = profile.generation;
     let mut reply = profile_reply(profile);
+    enrich_reply(app.clone(), &session, login_generation, &mut reply).await;
     if remember {
-        if let Err(error) = remember_session(
-            app.clone(),
-            &session,
-            reply.account.clone(),
-            login_generation,
-        )
-        .await
+        if let Err(error) = remember_session(app.clone(), &session, &reply, login_generation).await
         {
             reply.notice = Some(format!(
                 "Signed in, but this login was not remembered. {error}"
@@ -127,20 +273,24 @@ pub async fn steam_start_qr_login(
             qr_challenge_tx: Some(challenge_tx),
         })
         .await;
-    let event_result = relay
+    // A panicked relay task means the challenge never reached the UI: treat it
+    // like an emit failure so a successful login cannot strand a session the
+    // UI never saw start.
+    let relay_result = relay
         .await
-        .map_err(|_| "Could not deliver the Steam QR challenge.".to_owned())?;
+        .unwrap_or_else(|_| Err("Could not deliver the Steam QR challenge.".to_owned()));
     let profile = result.map_err(|error| error.to_string())?;
-    if let Err(error) = event_result {
+    if let Err(error) = relay_result {
         let _ = session.sign_out_generation();
         return Err(error);
     }
 
     let login_generation = profile.generation;
     let mut reply = profile_reply(profile);
+    enrich_reply(app.clone(), &session, login_generation, &mut reply).await;
     if remember
         && let Err(error) =
-            remember_session(app, &session, reply.account.clone(), login_generation).await
+            remember_session(app, &session, &reply, login_generation).await
     {
         reply.notice = Some(format!(
             "Signed in, but this login was not remembered. {error}"
@@ -156,6 +306,7 @@ pub async fn steam_start_qr_login(
 pub async fn steam_login_webtoken(
     mut params: BrowserTokenLoginParams,
     session: tauri::State<'_, DesktopSession>,
+    app: tauri::AppHandle,
 ) -> Result<SteamProfile, String> {
     let mut payload: BrowserTokenPayload = serde_json::from_str(&params.payload)
         .map_err(|_| "The browser login data must be valid JSON.".to_owned())?;
@@ -169,7 +320,7 @@ pub async fn steam_login_webtoken(
     {
         return Err("The browser login data is incomplete.".into());
     }
-    session
+    let profile = session
         .login(Credentials {
             account: settings::secret::canonical_account(&payload.account_name),
             password: String::new(),
@@ -181,17 +332,24 @@ pub async fn steam_login_webtoken(
             qr_challenge_tx: None,
         })
         .await
-        .map(profile_reply)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let generation = profile.generation;
+    let mut reply = profile_reply(profile);
+    enrich_reply(app, &session, generation, &mut reply).await;
+    session
+        .in_generation(generation, || ())
+        .map_err(|error| error.to_string())?;
+    Ok(reply)
 }
 
 #[tauri::command]
 pub async fn steam_login_saved(
     account: String,
     session: tauri::State<'_, DesktopSession>,
+    app: tauri::AppHandle,
 ) -> Result<SteamProfile, String> {
     let account = settings::secret::canonical_account(&account);
-    session
+    let profile = session
         .login_with(async move {
             let lookup = account.clone();
             let token = tauri::async_runtime::spawn_blocking(move || {
@@ -216,14 +374,25 @@ pub async fn steam_login_saved(
             })
         })
         .await
-        .map(profile_reply)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let generation = profile.generation;
+    let mut reply = profile_reply(profile);
+    enrich_reply(app, &session, generation, &mut reply).await;
+    session
+        .in_generation(generation, || ())
+        .map_err(|error| error.to_string())?;
+    Ok(reply)
 }
 
 #[tauri::command]
 pub fn steam_session(
     session: tauri::State<'_, DesktopSession>,
+    profile_state: tauri::State<'_, ProfileState>,
 ) -> Result<Option<SteamProfile>, String> {
+    let snapshot = with_profile(&profile_state.0, |profile| profile.clone());
+    if snapshot.is_some() {
+        return Ok(snapshot);
+    }
     session
         .profile()
         .map(|profile| profile.map(profile_reply))
@@ -234,10 +403,71 @@ pub fn steam_session(
 pub async fn steam_sign_out(
     session: tauri::State<'_, DesktopSession>,
     inventory: tauri::State<'_, crate::inventory::InventoryState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let generation = session
         .sign_out_generation()
         .map_err(|error| error.to_string())?;
     inventory.clear(generation).await;
+    with_profile(&app.state::<ProfileState>().0, |profile| {
+        *profile = None;
+    });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_profile_identity_without_confusing_steam_id64() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><profile>
+            <steamID64>76561198000000000</steamID64>
+            <steamID><![CDATA[Real Name & Co]]></steamID>
+            <avatarMedium><![CDATA[https://avatars.fastly.steamstatic.com/x_medium.jpg]]></avatarMedium>
+        </profile>"#;
+        assert_eq!(
+            extract_tag(xml, "steamID").as_deref(),
+            Some("Real Name & Co")
+        );
+        assert_eq!(
+            extract_tag(xml, "steamID64").as_deref(),
+            Some("76561198000000000")
+        );
+        assert_eq!(
+            extract_tag(xml, "avatarMedium").as_deref(),
+            Some("https://avatars.fastly.steamstatic.com/x_medium.jpg")
+        );
+        assert_eq!(extract_tag(xml, "missing"), None);
+    }
+
+    #[test]
+    fn unescapes_plain_xml_entities() {
+        assert_eq!(extract_tag("<steamID>Bob &amp; Co</steamID>", "steamID").unwrap(), "Bob & Co");
+        assert_eq!(
+            extract_tag("<steamID>&quot;Nick&quot;</steamID>", "steamID").unwrap(),
+            "\"Nick\""
+        );
+        // The limited-profile response: empty name, no avatar — both None.
+        let xml = "<profile><steamID64>1</steamID64><steamID><![CDATA[]]></steamID></profile>";
+        assert_eq!(extract_tag(xml, "steamID").as_deref(), Some(""));
+        assert_eq!(extract_tag(xml, "avatarMedium"), None);
+    }
+
+    #[test]
+    fn wallet_info_copies_the_update_verbatim() {
+        let update = WalletUpdate {
+            has_wallet: true,
+            balance: 12.34,
+            currency: "EUR".into(),
+        };
+        assert_eq!(
+            wallet_info(&update),
+            WalletInfo {
+                has_wallet: true,
+                balance: 12.34,
+                currency: "EUR".into(),
+            }
+        );
+    }
 }

@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 use settings::SettingsStore;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::Manager;
 use zeroize::Zeroizing;
 
 pub(crate) fn login_vault() -> settings::SecretStore {
@@ -76,9 +77,19 @@ pub(crate) fn remember_login(
     remember_with_vault(store, &login_vault(), account, token, commit)
 }
 
+#[cfg(test)]
 pub(crate) fn save_account_metadata(
     store: &mut SettingsStore,
     account: &str,
+) -> Result<(), String> {
+    save_account_identity(store, account, None, None)
+}
+
+pub(crate) fn save_account_identity(
+    store: &mut SettingsStore,
+    account: &str,
+    display_name: Option<&str>,
+    avatar_url: Option<&str>,
 ) -> Result<(), String> {
     let account = settings::secret::canonical_account(account);
     let mut entries = store
@@ -101,6 +112,12 @@ pub(crate) fn save_account_metadata(
     let entry = entry
         .as_object_mut()
         .ok_or_else(|| "Saved-account metadata is invalid.".to_owned())?;
+    if let Some(name) = display_name.map(str::trim).filter(|name| !name.is_empty()) {
+        entry.insert("displayName".into(), name.to_owned().into());
+    }
+    if let Some(url) = avatar_url.filter(|url| is_steam_avatar_url(url)) {
+        entry.insert("imageURL".into(), url.to_owned().into());
+    }
     entry.insert("hasSavedLogin".into(), true.into());
     entry.insert("needsReauth".into(), false.into());
     store
@@ -113,19 +130,20 @@ fn forget_with_vault(
     vault: &impl TokenVault,
     account: &str,
 ) -> Result<(), String> {
-    let previous = vault
-        .load(account)
-        .map_err(|_| "Secure credential storage is unavailable.".to_owned())?
-        .map(Zeroizing::new);
-    vault.remove(account).map_err(|_| {
-        "Could not remove the saved login from secure credential storage.".to_owned()
-    })?;
+    // A keyring read failure must not make an account undeletable: treat a
+    // failed pre-read as "no previous token".
+    let previous = vault.load(account).ok().flatten().map(Zeroizing::new);
+    // Token cleanup is best-effort: a locked/unavailable keyring still allows
+    // removing the account (any leftover token is inaccessible anyway).
+    if vault.remove(account).is_err() {
+        eprintln!(
+            "Warning: the saved login token for {account} could not be removed from secure storage."
+        );
+    }
     if let Err(error) = remove_account(store, account) {
-        restore_token(
-            vault,
-            account,
-            previous.as_ref().map(|token| token.as_str()),
-        )?;
+        if let Some(token) = previous {
+            let _ = restore_token(vault, account, Some(token.as_str()));
+        }
         return Err(error);
     }
     Ok(())
@@ -201,10 +219,11 @@ fn list_accounts(store: &SettingsStore) -> Vec<SavedAccount> {
     accounts
 }
 
-fn is_steam_avatar_url(url: &str) -> bool {
+pub(crate) fn is_steam_avatar_url(url: &str) -> bool {
     [
         "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/",
         "https://avatars.steamstatic.com/",
+        "https://avatars.fastly.steamstatic.com/",
         "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/avatars/",
     ]
     .iter()
@@ -237,11 +256,20 @@ fn set_account_position(
 }
 
 fn remove_account(store: &mut SettingsStore, username: &str) -> Result<(), String> {
+    let username = settings::secret::canonical_account(username);
     let mut entries = store
         .get::<Map<String, Value>>("account")
         .unwrap_or_default();
-    let username = settings::secret::canonical_account(username);
     entries.retain(|name, _| settings::secret::canonical_account(name) != username);
+    let order: Vec<String> = store
+        .get::<Vec<String>>("accountKeyList")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| settings::secret::canonical_account(name) != username)
+        .collect();
+    store
+        .set("accountKeyList", order)
+        .map_err(|error| error.to_string())?;
     store
         .set("account", entries)
         .map_err(|error| error.to_string())
@@ -251,18 +279,28 @@ fn remove_account(store: &mut SettingsStore, username: &str) -> Result<(), Strin
 pub fn store_get_accounts(
     store: tauri::State<'_, Mutex<SettingsStore>>,
 ) -> Result<Vec<SavedAccount>, String> {
-    let store = store.lock().map_err(|error| error.to_string())?;
+    let store = store
+        .lock()
+        .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
     Ok(list_accounts(&store))
 }
 
 #[tauri::command]
-pub fn store_delete_account(
+pub async fn store_delete_account(
     username: String,
-    store: tauri::State<'_, Mutex<SettingsStore>>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<SavedAccount>, String> {
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    forget_with_vault(&mut store, &login_vault(), &username)?;
-    Ok(list_accounts(&store))
+    // Keyring (zbus) calls can block for seconds — keep them off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = app.state::<Mutex<SettingsStore>>();
+        let mut store = settings
+            .lock()
+            .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
+        forget_with_vault(&mut store, &login_vault(), &username)?;
+        Ok(list_accounts(&store))
+    })
+    .await
+    .map_err(|_| "The account operation failed.".to_owned())?
 }
 
 #[tauri::command]
@@ -271,7 +309,9 @@ pub fn store_set_account_position(
     index: usize,
     store: tauri::State<'_, Mutex<SettingsStore>>,
 ) -> Result<Vec<SavedAccount>, String> {
-    let mut store = store.lock().map_err(|error| error.to_string())?;
+    let mut store = store
+        .lock()
+        .map_err(|_| "Saved-account storage is unavailable.".to_owned())?;
     set_account_position(&mut store, &username, index)
 }
 
@@ -341,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn vault_failure_does_not_create_an_account_or_remove_existing_metadata() {
+    fn vault_failure_blocks_remember_but_never_blocks_deletion() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = SettingsStore::open(directory.path().join("settings.json")).unwrap();
         let vault = MemoryVault::default();
@@ -354,8 +394,10 @@ mod tests {
         );
         assert!(list_accounts(&store).is_empty());
         save_account_metadata(&mut store, "alice").unwrap();
-        assert!(forget_with_vault(&mut store, &vault, "alice").is_err());
-        assert_eq!(list_accounts(&store).len(), 1);
+        // A broken keyring must not make an account undeletable: metadata
+        // removal is authoritative, token cleanup is best-effort.
+        assert!(forget_with_vault(&mut store, &vault, "alice").is_ok());
+        assert!(list_accounts(&store).is_empty());
     }
 
     #[test]
@@ -684,5 +726,50 @@ mod tests {
         let reopened = SettingsStore::open(path).unwrap();
         assert_eq!(list_accounts(&reopened).len(), 1);
         assert_eq!(list_accounts(&reopened)[0].username, "alice");
+        let order: Vec<String> = reopened.get("accountKeyList").unwrap();
+        assert_eq!(order, vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn saved_identity_stores_validated_avatar_and_display_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(directory.path().join("settings.json")).unwrap();
+
+        save_account_identity(
+            &mut store,
+            "alice",
+            Some("  Alice Synth  "),
+            Some("https://avatars.fastly.steamstatic.com/a_medium.jpg"),
+        )
+        .unwrap();
+        // The fastly avatar host is the current Steam CDN (legacy allowlist
+        // predates it); non-Steam hosts are rejected.
+        save_account_identity(&mut store, "bob", None, Some("https://evil.example/a.jpg")).unwrap();
+
+        let accounts = list_accounts(&store);
+        let alice = accounts
+            .iter()
+            .find(|account| account.username == "alice")
+            .unwrap();
+        assert_eq!(alice.display_name, "Alice Synth");
+        assert_eq!(
+            alice.image_url.as_deref(),
+            Some("https://avatars.fastly.steamstatic.com/a_medium.jpg")
+        );
+        let bob = accounts
+            .iter()
+            .find(|account| account.username == "bob")
+            .unwrap();
+        assert_eq!(bob.image_url, None);
+
+        // A later save without identity data must not clobber what we have.
+        save_account_identity(&mut store, "alice", None, None).unwrap();
+        let accounts = list_accounts(&store);
+        let alice = accounts
+            .iter()
+            .find(|account| account.username == "alice")
+            .unwrap();
+        assert_eq!(alice.display_name, "Alice Synth");
+        assert!(alice.has_saved_login);
     }
 }

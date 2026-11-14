@@ -8,8 +8,11 @@ base64 = "0.22"
 totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "steam", "zeroize"] }
 thiserror = "2"
 steam-vent = "=0.5.0"
+steam-vent-proto-common = "=0.5.1"
+steam-vent-proto-steam = "=0.5.2"
 steam-auth-rs = "=0.1.2"
 steam-client-rs = "=0.2.0"
+tokio-stream = "0.1"
 zeroize = "1"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 

@@ -10,6 +10,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(inventory::InventoryState::default())
+        .manage(session::ProfileState::default())
         .manage(steam_core::SessionManager::new(
             steam_core::SteamClient,
             std::time::Duration::from_secs(120),

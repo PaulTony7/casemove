@@ -102,6 +102,21 @@ pub struct SteamProfile {
     pub steam_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet: Option<WalletInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletInfo {
+    pub has_wallet: bool,
+    /// Whole currency units (Steam reports cents; divided by 100).
+    pub balance: f64,
+    pub currency: String,
 }
 
 pub const STEAM_LOGIN: &str = "steam_login";
@@ -111,8 +126,11 @@ pub const STEAM_SIGN_OUT: &str = "steam_sign_out";
 pub const STEAM_LOGIN_WEBTOKEN: &str = "steam_login_webtoken";
 pub const STEAM_START_QR_LOGIN: &str = "steam_start_qr_login";
 pub const LOGIN_QR_CHALLENGE: &str = "login:qr_challenge";
+pub const WALLET_CHANGED: &str = "wallet:changed";
 pub const REFRESH_INVENTORY: &str = "refresh_inventory";
 pub const STORAGE_CONTENTS: &str = "storage_contents";
+pub const STORE_GET_ACCOUNTS: &str = "store_get_accounts";
+pub const STORE_DELETE_ACCOUNT: &str = "store_delete_account";
 pub const STORE_SET_ACCOUNT_POSITION: &str = "store_set_account_position";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -170,6 +188,35 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<StorageContentsParams>(value).unwrap(),
             params
+        );
+    }
+
+    #[test]
+    fn profiles_without_enrichment_fields_deserialize_like_the_old_contract() {
+        let old = serde_json::json!({"account": "alice", "steamId": "76561198000000000"});
+        let profile: SteamProfile = serde_json::from_value(old).unwrap();
+        assert_eq!(profile.display_name, None);
+        assert_eq!(profile.avatar_url, None);
+        assert_eq!(profile.wallet, None);
+
+        let enriched = SteamProfile {
+            account: "alice".into(),
+            steam_id: "76561198000000000".into(),
+            notice: None,
+            display_name: Some("Alice".into()),
+            avatar_url: Some("https://avatars.steamstatic.com/a_medium.jpg".into()),
+            wallet: Some(WalletInfo {
+                has_wallet: true,
+                balance: 12.34,
+                currency: "USD".into(),
+            }),
+        };
+        let value = serde_json::to_value(&enriched).unwrap();
+        assert_eq!(value["displayName"], "Alice");
+        assert_eq!(value["wallet"]["balance"], 12.34);
+        assert_eq!(
+            serde_json::from_value::<SteamProfile>(value).unwrap(),
+            enriched
         );
     }
 }

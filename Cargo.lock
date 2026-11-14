@@ -684,6 +684,7 @@ dependencies = [
  "app-commands",
  "gc-cs2",
  "item-schema",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "settings",
@@ -693,6 +694,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "zeroize",
 ]
 
@@ -5802,9 +5804,11 @@ dependencies = [
  "steam-auth-rs",
  "steam-client-rs",
  "steam-vent",
+ "steam-vent-proto-common",
  "steam-vent-proto-steam",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-stream",
  "totp-rs",
  "zeroize",
 ]

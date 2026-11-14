@@ -1,4 +1,4 @@
-use crate::{Credentials, LoginError, Profile, SteamTransport};
+use crate::{Credentials, LoginError, Profile, SteamTransport, WalletUpdate};
 use std::io::Cursor;
 use std::sync::Arc;
 use steam_auth::{EAuthTokenPlatformType, LoginSession};
@@ -61,6 +61,18 @@ impl SteamConnection {
         match self {
             Self::SteamVent { connection, .. } => connection.steam_id().steam64().to_string(),
             Self::BrowserToken { steam_id, .. } => steam_id.clone(),
+        }
+    }
+
+    /// Wallet balance updates from the CM. Only the SteamVent transport
+    /// receives `CMsgClientWalletInfoUpdate`; browser-token sessions return
+    /// `None` (no balance available without the CM connection).
+    pub fn wallet_stream(
+        &self,
+    ) -> Option<std::pin::Pin<Box<dyn tokio_stream::Stream<Item = WalletUpdate> + Send>>> {
+        match self {
+            Self::SteamVent { connection, .. } => Some(crate::wallet::wallet_stream(connection)),
+            Self::BrowserToken { .. } => None,
         }
     }
 }

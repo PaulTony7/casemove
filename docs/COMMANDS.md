@@ -27,9 +27,17 @@ Conventions:
 | `steam_session() -> Option<SteamProfile>` | Renderer auth state | Account and SteamID only; restores UI state after a frontend reload. Connection-loss events pending | ◐ |
 | `steam_start_qr_login(remember) -> SteamProfile` | `startQRLogin` + `login-reply` | QR challenge URL pushed as `login:qr_challenge`; sign-out cancels a pending login. Live verification pending | ◐ |
 | `steam_login_webtoken(params: BrowserTokenLoginParams) -> SteamProfile` | Browser-token login | Accepts browser login JSON transiently; validates `logged_in`, account, token, and SteamID. Uses `steam-client-rs`; token is not returned or remembered. Library token-zeroization parity and live verification pending | ◐ |
-| `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | Not ported as a separate command; `steam_sign_out()` cancels the shared pending-login lifecycle | ◐ |
+| `steam_cancel_qr_login()` | `qrLogin:cancel` (main) / `cancelQRLogin` (preload) | Not ported as a separate command; `steam_sign_out()` cancels the shared pending-login lifecycle | ☑ |
 | `steam_force_login()` | `forceLogin` | Retry GC attach after `playingElsewhere`/timeout race | ☐ |
 | `steam_sign_out()` | `signOut` | Drops the retained connection or cancels pending login. Offline cancellation/relogin tests pass; live S6 gate pending | ◐ |
+
+All login replies are `SteamProfile { account, steam_id, notice?, display_name?,
+avatar_url?, wallet? }`. The three optional fields are filled by post-login
+enrichment: `wallet` from the CM's `CMsgClientWalletInfoUpdate` (first message
+waited on for ≤3 s, then forwarded as `wallet:changed`), identity from the
+steamcommunity `?xml=1` profile (allowlisted avatar hosts). Enrichment is
+best-effort and never fails a login; the snapshot is retained for
+`steam_session` after a frontend reload.
 | `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
 | `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | Kill local Steam client (Windows only in legacy) | ☐ |
 
@@ -85,7 +93,7 @@ entries never sent (`errorMain`, `checkSteam`, `closeSteam`, `login`,
 | `inventory:changed` | `userEvents` code 1 | `{ reason: itemRemoved\|itemChanged\|itemAcquired, item, items }` (legacy tuple `[1, desc, [item, enriched]]`) | ☐ |
 | `steam:connection` | `userEvents` code 2 | `{ state: disconnected\|reconnected\|fatalError }` | ☐ |
 | `gc:connection` | `userEvents` code 3 | `{ state: connected\|disconnected, reason? }` | ☐ |
-| `wallet:changed` | `userEvents` code 4 | `{ has_wallet, currency, balance }` | ☐ |
+| `wallet:changed` | `userEvents` code 4 | `WalletInfo { hasWallet, balance, currency }` — balance in whole currency units (raw cents ÷ 100), currency mapped from Steam's numeric codes like legacy | ☑ |
 | `pricing:results` | `pricing` | Price map keyed `item_name+wear` | ☐ |
 | `updater:status` | `updater` | `{ message }` | ☐ |
 | `login:qr_challenge` | `qrLogin:show` | Steam QR challenge URL string; rendered locally into an SVG QR image | ◐ |

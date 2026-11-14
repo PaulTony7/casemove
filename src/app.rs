@@ -3,7 +3,8 @@ use app_commands::{
     AccountPositionParams, BrowserTokenLoginParams, InventoryItem, InventorySnapshot,
     LOGIN_QR_CHALLENGE, PasswordLoginParams, REFRESH_INVENTORY, STEAM_LOGIN, STEAM_LOGIN_SAVED,
     STEAM_LOGIN_WEBTOKEN, STEAM_SESSION, STEAM_SIGN_OUT, STEAM_START_QR_LOGIN, STORAGE_CONTENTS,
-    STORE_SET_ACCOUNT_POSITION, SavedAccount, SteamProfile, StorageContentsParams,
+    STORE_DELETE_ACCOUNT, STORE_GET_ACCOUNTS, STORE_SET_ACCOUNT_POSITION, SavedAccount,
+    SteamProfile, StorageContentsParams, WALLET_CHANGED, WalletInfo,
 };
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_icons::Icon;
@@ -70,6 +71,61 @@ fn qr_image_url(challenge: &str) -> Result<String, String> {
     Ok(format!("data:image/svg+xml,{encoded}"))
 }
 
+fn currency_symbol(currency: &str) -> &'static str {
+    match currency {
+        "USD" => "$",
+        "EUR" => "€",
+        "GBP" => "£",
+        "RUB" => "₽",
+        "JPY" | "CNY" => "¥",
+        "KRW" => "₩",
+        "BRL" => "R$",
+        "TRY" => "₺",
+        "PLN" => "zł",
+        "UAH" => "₴",
+        "INR" => "₹",
+        "AUD" => "A$",
+        "CAD" => "C$",
+        "CHF" => "CHF ",
+        "SEK" | "NOK" | "DKK" => "kr ",
+        _ => "",
+    }
+}
+
+fn format_balance(wallet: &WalletInfo) -> String {
+    let symbol = currency_symbol(&wallet.currency);
+    if symbol.is_empty() {
+        format!("{} {:.2}", wallet.currency, wallet.balance)
+    } else {
+        format!("{symbol}{:.2}", wallet.balance)
+    }
+}
+
+fn profile_avatar(profile: Option<SteamProfile>) -> leptos::prelude::AnyView {
+    match profile.and_then(|value| value.avatar_url) {
+        Some(url) => view! { <img class="avatar account-avatar" src=url alt=""/> }.into_any(),
+        None => view! { <div class="avatar"><Icon icon=icondata::LuUserRound/></div> }.into_any(),
+    }
+}
+
+fn profile_display_name(profile: Option<SteamProfile>) -> String {
+    profile
+        .map(|value| {
+            value
+                .display_name
+                .filter(|name| !name.is_empty())
+                .unwrap_or(value.account)
+        })
+        .unwrap_or_else(|| "Steam account".into())
+}
+
+fn wallet_balance(wallet: Option<WalletInfo>) -> String {
+    wallet
+        .filter(|info| info.has_wallet && info.balance > 0.0)
+        .map(|info| format_balance(&info))
+        .unwrap_or_default()
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let (method, set_method) = signal(LoginMethod::Regular);
@@ -78,6 +134,7 @@ pub fn App() -> impl IntoView {
     let (show_secret, set_show_secret) = signal(false);
     let (desktop, set_desktop) = signal(false);
     let (profile, set_profile) = signal(None::<SteamProfile>);
+    let (wallet, set_wallet) = signal(None::<WalletInfo>);
     let (login_error, set_login_error) = signal(String::new());
     let (login_busy, set_login_busy) = signal(false);
     let (qr_challenge, set_qr_challenge) = signal(None::<String>);
@@ -162,12 +219,29 @@ pub fn App() -> impl IntoView {
             }
         });
         spawn_local(async move {
-            match desktop_command("store_get_accounts", JsValue::NULL).await {
+            let handler = Closure::<dyn FnMut(JsValue)>::new(move |event| {
+                let payload = js_sys::Reflect::get(&event, &JsValue::from_str("payload"))
+                    .unwrap_or(JsValue::NULL);
+                if let Ok(info) = serde_wasm_bindgen::from_value::<WalletInfo>(payload) {
+                    set_wallet.set(Some(info));
+                }
+            });
+            if let Ok(unlisten) = listen(WALLET_CHANGED, handler.as_ref().unchecked_ref()).await
+                && unlisten.is_function()
+            {
+                handler.forget();
+            }
+        });
+        spawn_local(async move {
+            match desktop_command(STORE_GET_ACCOUNTS, JsValue::NULL).await {
                 Ok(value) => set_accounts.set(value),
                 Err(error) => set_account_error.set(error),
             }
-            match desktop_command(STEAM_SESSION, JsValue::NULL).await {
-                Ok(value) => set_profile.set(value),
+            match desktop_command::<Option<SteamProfile>>(STEAM_SESSION, JsValue::NULL).await {
+                Ok(value) => {
+                    set_wallet.set(value.as_ref().and_then(|profile| profile.wallet.clone()));
+                    set_profile.set(value);
+                }
                 Err(error) => set_login_error.set(error),
             }
             set_loading.set(false);
@@ -181,7 +255,7 @@ pub fn App() -> impl IntoView {
         set_removing.set(true);
         spawn_local(async move {
             let result = match serde_wasm_bindgen::to_value(&RemoveAccountArgs { username }) {
-                Ok(args) => desktop_command("store_delete_account", args).await,
+                Ok(args) => desktop_command(STORE_DELETE_ACCOUNT, args).await,
                 Err(error) => Err(error.to_string()),
             };
             match result {
@@ -200,9 +274,10 @@ pub fn App() -> impl IntoView {
     let complete_login = move |value: SteamProfile| {
         set_login_error.set(value.notice.clone().unwrap_or_default());
         set_qr_challenge.set(None);
+        set_wallet.set(value.wallet.clone());
         set_profile.set(Some(value));
         spawn_local(async move {
-            match desktop_command("store_get_accounts", JsValue::NULL).await {
+            match desktop_command(STORE_GET_ACCOUNTS, JsValue::NULL).await {
                 Ok(accounts) => set_accounts.set(accounts),
                 Err(error) => set_account_error.set(error),
             }
@@ -419,6 +494,7 @@ pub fn App() -> impl IntoView {
             match desktop_command::<()>(STEAM_SIGN_OUT, JsValue::NULL).await {
                 Ok(()) => {
                     set_profile.set(None);
+                    set_wallet.set(None);
                     set_login_error.set(String::new());
                 }
                 Err(error) => set_login_error.set(error),
@@ -528,11 +604,12 @@ pub fn App() -> impl IntoView {
             <aside class="sidebar" class:mobile-open=move || mobile_menu.get()>
                 <a class="brand" href="#/signin" on:click=move |_| { set_inventory_open.set(false); set_mobile_menu.set(false); }><img src="public/casemove.svg" alt=""/>"casemove"</a>
                 <div class="session-summary">
-                    <div class="avatar"><Icon icon=icondata::LuUserRound/></div>
-                    <div><strong>{move || profile.get().map(|value| value.account).unwrap_or_else(|| "Steam account".into())}</strong>
+                    <div>{move || profile_avatar(profile.get())}</div>
+                    <div><strong>{move || profile_display_name(profile.get())}</strong>
                         <span class:disconnected=move || profile.get().is_none() class:connected=move || profile.get().is_some()>
                             {move || if profile.get().is_some() { "Signed in to Steam" } else { "Not connected" }}
                         </span>
+                        <span class="wallet-balance">{move || wallet_balance(wallet.get())}</span>
                     </div>
                 </div>
                 <nav aria-label="Main navigation">
@@ -558,8 +635,10 @@ pub fn App() -> impl IntoView {
                         <Show when=move || profile.get().is_none() fallback=move || view! {
                             <div class="session-details">
                                 <h1 id="login-heading">"Steam session established"</h1>
-                                <strong>{move || profile.get().map(|value| value.account).unwrap_or_default()}</strong>
+                                {move || profile_avatar(profile.get())}
+                                <strong>{move || profile_display_name(profile.get())}</strong>
                                 <p class="steam-id">{move || profile.get().map(|value| value.steam_id).unwrap_or_default()}</p>
+                                <p class="wallet-balance">{move || wallet_balance(wallet.get())}</p>
                                 <button class="sign-in open-inventory" disabled=move || session_busy.get() on:click=move |_| set_inventory_open.set(true)>
                                     <Icon icon=icondata::LuArchive/>"Inventory"
                                 </button>
