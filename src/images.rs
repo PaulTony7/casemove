@@ -1,5 +1,4 @@
 use crate::messages::{Message, Reply};
-use app_commands::InventoryItem;
 use eframe::egui;
 use std::collections::HashMap;
 use tokio::runtime::Handle;
@@ -13,7 +12,6 @@ enum Entry {
 /// URL → texture cache for avatars and item thumbnails, fetched off-thread.
 pub struct ImageCache {
     entries: HashMap<String, Entry>,
-    catalog: HashMap<String, String>,
     rt: Handle,
     reply: Reply,
 }
@@ -22,19 +20,9 @@ impl ImageCache {
     pub fn new(rt: Handle, reply: Reply) -> Self {
         Self {
             entries: HashMap::new(),
-            catalog: HashMap::new(),
             rt,
             reply,
         }
-    }
-
-    /// Installs the fetched econ-path → Steam CDN catalog.
-    pub fn set_catalog(&mut self, catalog: HashMap<String, String>) {
-        self.catalog = catalog;
-    }
-
-    pub fn item_url(&self, item: &InventoryItem) -> Option<String> {
-        item_url(item, &self.catalog)
     }
 
     /// Returns the cached texture, spawning a fetch on first use.
@@ -72,28 +60,27 @@ impl ImageCache {
     }
 }
 
-/// The render URL for an item: the bundled collections hit first, then the
-/// fetched econ-path catalog. Skin renders live under `_light` there — the
-/// `_light_large` suffix has no entry.
-pub fn item_url(item: &InventoryItem, catalog: &HashMap<String, String>) -> Option<String> {
-    if let Some(url) = item.image_url.as_deref().filter(|url| !url.is_empty()) {
-        return Some(url.to_owned());
-    }
-    let path = item.image_path.as_deref()?;
-    if let Some(url) = catalog.get(path) {
-        return Some(url.clone());
-    }
-    let alternate = path.strip_suffix("_light_large")?;
-    catalog.get(&format!("{alternate}_light")).cloned()
-}
-
 async fn fetch_image(url: &str) -> Result<egui::ColorImage, ()> {
-    let response = reqwest::get(url)
-        .await
-        .map_err(|_| ())?
-        .error_for_status()
-        .map_err(|_| ())?;
-    let bytes = response.bytes().await.map_err(|_| ())?;
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let response = reqwest::get(url)
+            .await
+            .map_err(|_| ())?
+            .error_for_status()
+            .map_err(|_| ())?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > 16 * 1024 * 1024)
+        {
+            return Err(());
+        }
+        let bytes = response.bytes().await.map_err(|_| ())?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(());
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| ())??;
     tokio::task::spawn_blocking(move || {
         let image = image::load_from_memory(&bytes).map_err(|_| ())?.to_rgba8();
         let size = [image.width() as usize, image.height() as usize];
@@ -105,6 +92,7 @@ async fn fetch_image(url: &str) -> Result<egui::ColorImage, ()> {
     .await
     .map_err(|_| ())?
 }
+
 
 /// Paints `url` into a fixed box (contain-fit), or a fallback glyph when no
 /// texture is available yet.
@@ -165,76 +153,34 @@ pub fn avatar(ui: &mut egui::Ui, cache: &mut ImageCache, url: Option<&str>, size
 mod tests {
     use super::*;
 
-    fn item(image_url: Option<&str>, image_path: Option<&str>) -> InventoryItem {
-        InventoryItem {
-            id: "1".into(),
-            definition_index: 7,
-            name: "AK-47".into(),
-            custom_name: None,
-            image_url: image_url.map(str::to_owned),
-            image_path: image_path.map(str::to_owned),
-            quantity: 1,
-            rarity: 5,
-            position: 1,
-            wear: None,
-            wear_name: None,
-            paint_seed: None,
-            stat_trak: false,
-            is_storage_unit: false,
-            storage_item_count: None,
-            category: None,
-            major: None,
-            trade_unlock: None,
-            moveable: true,
-            equipped_ct: false,
-            equipped_t: false,
-            price: None,
-        }
-    }
-
-    fn catalog(entries: &[(&str, &str)]) -> HashMap<String, String> {
-        entries
-            .iter()
-            .map(|(path, url)| ((*path).to_owned(), (*url).to_owned()))
-            .collect()
-    }
-
     #[test]
-    fn item_urls_prefer_the_bundled_hit_then_the_catalog() {
-        let catalog = catalog(&[
-            ("econ/tools/casket", "https://cdn/casket.png"),
-            (
-                "econ/default_generated/weapon_ak47_cu_ak47_cobra_light",
-                "https://cdn/skin.png",
-            ),
-        ]);
-
-        // The bundled collections URL wins when present.
-        let bundled = item(Some("https://cdn/bundled.png"), Some("econ/tools/casket"));
-        assert_eq!(
-            item_url(&bundled, &catalog).as_deref(),
-            Some("https://cdn/bundled.png")
-        );
-
-        // Otherwise the econ path resolves through the catalog.
-        let catalogued = item(None, Some("econ/tools/casket"));
-        assert_eq!(
-            item_url(&catalogued, &catalog).as_deref(),
-            Some("https://cdn/casket.png")
-        );
-
-        // `_light_large` renders are stored as `_light` in the catalog.
-        let skin = item(
-            None,
-            Some("econ/default_generated/weapon_ak47_cu_ak47_cobra_light_large"),
-        );
-        assert_eq!(
-            item_url(&skin, &catalog).as_deref(),
-            Some("https://cdn/skin.png")
-        );
-
-        // Nothing available → the placeholder glyph.
-        assert_eq!(item_url(&item(None, None), &catalog), None);
-        assert_eq!(item_url(&item(None, Some("econ/missing")), &catalog), None);
+    #[ignore = "requires public Internet access"]
+    fn live_case_sticker_and_graffiti_images_decode() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for catalog in ["crates", "stickers", "graffiti"] {
+                let response = reqwest::get(format!(
+                    "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/{catalog}.json"
+                ))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+                let entries: Vec<serde_json::Value> = serde_json::from_str(&response).unwrap();
+                let entry = entries.iter().find(|entry| match catalog {
+                    "crates" => entry["name"] == "Recoil Case",
+                    "graffiti" => entry["color_index"] == 1,
+                    _ => entry["market_hash_name"].is_string(),
+                }).unwrap();
+                let url = entry["image"].as_str().unwrap().replace(
+                    "community.akamai.steamstatic.com",
+                    "community.steamstatic.com",
+                );
+                let image = fetch_image(&url).await.unwrap_or_else(|()| {
+                    panic!("Could not download and decode {catalog} image")
+                });
+                assert!(image.size[0] > 0 && image.size[1] > 0);
+            }
+        });
     }
 }

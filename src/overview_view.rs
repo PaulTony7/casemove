@@ -729,6 +729,11 @@ mod tests {
             equipped_ct: false,
             equipped_t: false,
             price,
+            collection: None,
+            trade_up_eligible: false,
+            stickers: Vec::new(),
+            music_kit: None,
+            graffiti: None,
         };
         GroupedItem {
             combined_qty: qty as usize,

@@ -104,6 +104,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         })
         .show(ui, |ui| {
             header(ui, app, &mut back, &mut refresh, &mut sign_out);
+            if !app.schema_notice.is_empty() {
+                ui.label(
+                    egui::RichText::new(&app.schema_notice)
+                        .size(11.0)
+                        .color(theme::MUTED),
+                );
+            }
             ui.add_space(8.0);
             if app.storage_selection.is_some() {
                 storage_section(ui, app, &shortcuts, &mut clipboard);
@@ -1113,12 +1120,12 @@ fn table(
 }
 
 fn identity_cell(ui: &mut egui::Ui, images: &mut ImageCache, item: &InventoryItem) {
-    let url = images.item_url(item);
+    let url = item.image_url.as_deref().filter(|url| !url.is_empty());
     ui.horizontal(|ui| {
         images::media_box(
             ui,
             images,
-            url.as_deref(),
+            url,
             egui::vec2(44.0, 36.0),
             egui::CornerRadius::same(3),
             egui_phosphor::regular::PACKAGE,
@@ -1161,6 +1168,31 @@ fn identity_cell(ui: &mut egui::Ui, images: &mut ImageCache, item: &InventoryIte
                     );
                 }
             });
+            if !item.stickers.is_empty() {
+                let names = item
+                    .stickers
+                    .iter()
+                    .map(|sticker| format!("{} · {}", sticker.name, sticker.kind))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.label(
+                    egui::RichText::new(names)
+                        .size(10.0)
+                        .color(theme::MUTED),
+                );
+            }
+            for (label, value) in [
+                ("Music kit", item.music_kit.as_deref()),
+                ("Graffiti", item.graffiti.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    ui.label(
+                        egui::RichText::new(format!("{label}: {value}"))
+                            .size(10.0)
+                            .color(theme::MUTED),
+                    );
+                }
+            }
         });
     });
 }

@@ -31,20 +31,22 @@ pub struct GroupedItem {
     pub combined_qty: usize,
 }
 
-/// Legacy `combineInventory` key: name, custom name, item URL (our resolved
-/// image URL), wear name, trade unlock, moveable — and because this UI
-/// always shows the Float column — the exact paint wear. Sticker fields join
-/// the key once sticker metadata is modeled.
+/// Legacy `combineInventory` key plus the item data now visible in the table.
 fn group_key(item: &InventoryItem) -> String {
     format!(
-        "{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{}\u{1}{:?}\u{1}{}",
+        "{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}",
         item.name,
         item.custom_name.as_deref().unwrap_or(""),
         item.wear_name.as_deref().unwrap_or(""),
         item.wear,
         item.image_url.as_deref().unwrap_or(""),
+        item.image_path.as_deref().unwrap_or(""),
         item.trade_unlock,
-        item.moveable
+        item.moveable,
+        item.collection,
+        item.stickers,
+        item.music_kit,
+        item.graffiti
     )
 }
 
@@ -179,6 +181,46 @@ pub fn sort_rows<T: std::borrow::Borrow<GroupedItem>>(items: &mut [T], mode: &st
             };
             order.then_with(|| by_name(left, right))
         }),
+        "collection" => items.sort_by(|left, right| {
+            left.borrow()
+                .representative
+                .collection
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(
+                    right
+                        .borrow()
+                        .representative
+                        .collection
+                        .as_deref()
+                        .unwrap_or_default(),
+                )
+                .then_with(|| by_name(left.borrow(), right.borrow()))
+        }),
+        "stickers" => items.sort_by(|left, right| {
+            right
+                .borrow()
+                .representative
+                .stickers
+                .len()
+                .cmp(&left.borrow().representative.stickers.len())
+                .then_with(|| by_name(left.borrow(), right.borrow()))
+        }),
+        "storage" => items.sort_by(|left, right| {
+            let left = left.borrow();
+            let right = right.borrow();
+            let left_name = left
+                .representative
+                .custom_name
+                .as_deref()
+                .unwrap_or(&left.representative.name);
+            let right_name = right
+                .representative
+                .custom_name
+                .as_deref()
+                .unwrap_or(&right.representative.name);
+            left_name.cmp(right_name).then_with(|| by_name(left, right))
+        }),
         _ => items.sort_by(|left, right| {
             left.borrow()
                 .representative
@@ -215,6 +257,22 @@ pub fn matches_filters(
             || item
                 .custom_name
                 .as_ref()
+                .is_some_and(|name| name.to_lowercase().contains(query))
+            || item
+                .collection
+                .as_ref()
+                .is_some_and(|collection| collection.to_lowercase().contains(query))
+            || item
+                .stickers
+                .iter()
+                .any(|sticker| sticker.name.to_lowercase().contains(query))
+            || item
+                .music_kit
+                .as_ref()
+                .is_some_and(|name| name.to_lowercase().contains(query))
+            || item
+                .graffiti
+                .as_ref()
                 .is_some_and(|name| name.to_lowercase().contains(query)))
         && (categories.is_empty()
             || item
@@ -241,6 +299,11 @@ fn matches_property(item: &InventoryItem, property: &str) -> bool {
         "Moveable" => item.moveable,
         "Equipped CT" => item.equipped_ct,
         "Equipped T" => item.equipped_t,
+        "Stickers" => item
+            .stickers
+            .iter()
+            .any(|sticker| sticker.kind == "Sticker"),
+        "Patches" => item.stickers.iter().any(|sticker| sticker.kind == "Patch"),
         _ => false,
     }
 }
@@ -273,6 +336,11 @@ mod tests {
             equipped_ct: false,
             equipped_t: false,
             price: None,
+            collection: None,
+            trade_up_eligible: false,
+            stickers: Vec::new(),
+            music_kit: None,
+            graffiti: None,
         }
     }
 
@@ -528,6 +596,86 @@ mod tests {
     }
 
     #[test]
+    fn sticker_and_patch_filters_match_applied_item_metadata() {
+        let mut stickered = row(1, "Stickered", 0, 5, None);
+        stickered.stickers.push(app_commands::InventorySticker {
+            slot: 0,
+            name: "Sticker".into(),
+            kind: "Sticker".into(),
+            image_path: None,
+            image_url: None,
+            wear: None,
+            scale: None,
+            rotation: None,
+            offset_x: None,
+            offset_y: None,
+        });
+        let mut patched = row(2, "Patched", 1, 5, None);
+        patched.stickers.push(app_commands::InventorySticker {
+            slot: 0,
+            name: "Patch".into(),
+            kind: "Patch".into(),
+            image_path: None,
+            image_url: None,
+            wear: None,
+            scale: None,
+            rotation: None,
+            offset_x: None,
+            offset_y: None,
+        });
+        let rows = [grouped(stickered), grouped(patched)];
+        let empty = HashSet::new();
+        let stickers = HashSet::from(["Stickers".to_owned()]);
+        let matches: Vec<&str> = rows
+            .iter()
+            .filter(|row| matches_filters(row, "", false, &empty, &empty, &empty, &stickers))
+            .map(|row| row.representative.name.as_str())
+            .collect();
+        assert_eq!(matches, vec!["Stickered"]);
+
+        let patches = HashSet::from(["Patches".to_owned()]);
+        let matches: Vec<&str> = rows
+            .iter()
+            .filter(|row| matches_filters(row, "", false, &empty, &empty, &empty, &patches))
+            .map(|row| row.representative.name.as_str())
+            .collect();
+        assert_eq!(matches, vec!["Patched"]);
+    }
+
+    #[test]
+    fn collection_sticker_and_storage_name_sorts_use_enriched_fields() {
+        let mut zebra = row(1, "Zebra", 0, 5, None);
+        zebra.collection = Some("Zulu".into());
+        zebra.stickers.push(app_commands::InventorySticker {
+            slot: 0,
+            name: "One".into(),
+            kind: "Sticker".into(),
+            image_path: None,
+            image_url: None,
+            wear: None,
+            scale: None,
+            rotation: None,
+            offset_x: None,
+            offset_y: None,
+        });
+        let mut alpha = row(2, "Alpha", 0, 5, None);
+        alpha.collection = Some("Alpha".into());
+        alpha.custom_name = Some("B Storage".into());
+        let mut beta = row(3, "Beta", 0, 5, None);
+        beta.custom_name = Some("A Storage".into());
+        beta.stickers.extend(zebra.stickers.clone());
+        beta.stickers.push(zebra.stickers[0].clone());
+
+        let mut rows = vec![grouped(zebra), grouped(alpha), grouped(beta)];
+        sort_rows(&mut rows, "collection");
+        assert_eq!(names(&rows), vec!["Beta", "Alpha", "Zebra"]);
+        sort_rows(&mut rows, "stickers");
+        assert_eq!(names(&rows), vec!["Beta", "Zebra", "Alpha"]);
+        sort_rows(&mut rows, "storage");
+        assert_eq!(names(&rows), vec!["Beta", "Alpha", "Zebra"]);
+    }
+
+    #[test]
     fn tradehold_sort_puts_unlocked_items_first_then_soonest_unlock() {
         let mut later = row(1, "Later", 0, 5, None);
         later.trade_unlock = Some(1_900_000_000_000);
@@ -586,10 +734,7 @@ mod tests {
         assert_eq!(big_group[0].combined_qty, 3);
         let mut single = row(7, "Single", 3, 5, None);
         single.price = Some(5.0);
-        let mut items = vec![
-            big_group.into_iter().next().unwrap(),
-            grouped(single),
-        ];
+        let mut items = vec![big_group.into_iter().next().unwrap(), grouped(single)];
         sort_rows(&mut items, "price");
         // $5×1 ranks before $2×3=$6.
         assert_eq!(names(&items), vec!["Single", "Big"]);
