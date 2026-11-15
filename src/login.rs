@@ -65,6 +65,8 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     .min_size(egui::vec2(width, 36.0));
     if ui.add_enabled(!app.session_busy, open_inventory).clicked() {
         app.inventory_open = true;
+        app.overview_open = false;
+        app.storage_open = false;
         app.save_view("inventory");
     }
     ui.add_space(8.0);

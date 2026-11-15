@@ -41,15 +41,14 @@ sticker-kit images, and case images use inventory definition IDs. Offline
 conversion tests and opt-in live catalog/download tests cover these paths;
 live-account rendering is still unverified.
 
-**Recommended next feature:** Build a storage-management view for unit names,
-counts, capacity, and values. It builds on loaded storage contents and provides
-a foundation for the transfer workflows.
+**Recommended next feature:** Transfer-to page and destination-unit selection, built
+on the storage-management view's unit list and capacity data.
 
 ## Storage Units
 
 - [ ] Search, filter, and sort storage contents.
 - [ ] Pagination or virtualization for storage contents.
-- [ ] Display storage counts, capacity, names, and values in a storage-management view.
+- [x] Display storage counts, capacity, names, and values in a storage-management view.
 - [ ] Rename storage units.
 - [ ] Reconcile storage counts/cache after items move during loading.
 

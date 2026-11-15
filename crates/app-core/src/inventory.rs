@@ -607,13 +607,16 @@ impl Core {
 
     /// Reads every storage unit's contents, one GC round-trip at a time
     /// (the slot lock rejects overlapping requests, so they cannot race).
+    /// Results stay paired with their unit so the management view can show
+    /// per-unit counts and values.
     pub async fn all_storage_contents(
         &self,
         casket_ids: Vec<String>,
-    ) -> Result<Vec<InventoryItem>, String> {
-        let mut contents = Vec::new();
+    ) -> Result<Vec<(String, Vec<InventoryItem>)>, String> {
+        let mut contents = Vec::with_capacity(casket_ids.len());
         for casket_id in casket_ids {
-            contents.extend(self.storage_contents(casket_id).await?);
+            let items = self.storage_contents(casket_id.clone()).await?;
+            contents.push((casket_id, items));
         }
         Ok(contents)
     }

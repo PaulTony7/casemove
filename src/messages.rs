@@ -28,8 +28,9 @@ pub enum Message {
     },
     /// Fetched live Steam Market quotes as `(market_hash_name, price)` pairs.
     LivePrices(Vec<(String, f64)>),
-    /// All storage units' contents, `(attempt, result)`.
-    StorageAll(u64, Result<Vec<InventoryItem>, String>),
+    /// All storage units' contents as `(casket id, items)` pairs, `(attempt,
+    /// result)`.
+    StorageAll(u64, Result<Vec<(String, Vec<InventoryItem>)>, String>),
 }
 
 /// Clonable handle for sending a `Message` and waking the UI.

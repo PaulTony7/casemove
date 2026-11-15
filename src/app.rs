@@ -1,6 +1,6 @@
 use crate::images::{self, ImageCache};
 use crate::messages::{Message, Reply};
-use crate::{icons, inventory_view, login, overview_view, theme};
+use crate::{icons, inventory_view, login, overview_view, storage_view, theme};
 use app_commands::{
     BrowserTokenLoginParams, InventoryItem, InventorySnapshot, PasswordLoginParams, SavedAccount,
     SteamProfile, WalletInfo,
@@ -59,6 +59,7 @@ pub struct CasemoveApp {
 
     pub inventory_open: bool,
     pub overview_open: bool,
+    pub storage_open: bool,
     pub overview_by: overview_view::OverviewBy,
     /// Persisted sidebar width and the last inventory page.
     pub sidebar_width: f32,
@@ -83,6 +84,10 @@ pub struct CasemoveApp {
     pub storage_aggregate: Option<Vec<InventoryItem>>,
     pub storage_aggregate_busy: bool,
     pub storage_aggregate_error: String,
+    /// Contents per storage unit (keyed by unit id) after "Load storage
+    /// units", used by the management view for per-unit values.
+    pub storage_unit_contents: std::collections::BTreeMap<String, Vec<InventoryItem>>,
+    pub storage_query: String,
     pub price_cache: pricing::LiveCache,
     pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
@@ -113,11 +118,12 @@ impl CasemoveApp {
             .store_get::<f32>("ui.sidebar")
             .unwrap_or(216.0)
             .clamp(184.0, 320.0);
-        let (inventory_open, overview_open) =
+        let (inventory_open, overview_open, storage_open) =
             match core.store_get::<String>("ui.view").as_deref() {
-                Some("inventory") => (true, false),
-                Some("overview") => (false, true),
-                _ => (false, false),
+                Some("inventory") => (true, false, false),
+                Some("overview") => (false, true, false),
+                Some("storage") => (false, false, true),
+                _ => (false, false, false),
             };
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
         let mut app = Self {
@@ -147,6 +153,7 @@ impl CasemoveApp {
             removing: false,
             inventory_open,
             overview_open,
+            storage_open,
             overview_by,
             sidebar_width,
             saved_page,
@@ -167,6 +174,8 @@ impl CasemoveApp {
             storage_aggregate: None,
             storage_aggregate_busy: false,
             storage_aggregate_error: String::new(),
+            storage_unit_contents: std::collections::BTreeMap::new(),
+            storage_query: String::new(),
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
             view: inventory_view::InventoryViewState {
@@ -410,7 +419,8 @@ impl CasemoveApp {
                             majors.sort();
                             majors.dedup();
                             self.storage_majors = majors;
-                            self.storage_contents = Some(items);
+                            self.storage_contents = Some(items.clone());
+                            self.storage_unit_contents.insert(casket, items);
                             self.storage_view = inventory_view::InventoryViewState::default();
                             self.refresh_live_prices(false);
                         }
@@ -434,8 +444,14 @@ impl CasemoveApp {
                 self.storage_aggregate_busy = false;
                 if attempt == self.attempt {
                     match result {
-                        Ok(items) => {
-                            self.storage_aggregate = Some(items);
+                        Ok(units) => {
+                            self.storage_aggregate = Some(
+                                units
+                                    .iter()
+                                    .flat_map(|(_, items)| items.iter().cloned())
+                                    .collect(),
+                            );
+                            self.storage_unit_contents = units.into_iter().collect();
                             self.storage_aggregate_error.clear();
                             self.apply_live_prices();
                             self.refresh_live_prices(false);
@@ -464,6 +480,7 @@ impl CasemoveApp {
         self.inventory = snapshot;
         // Contents may have changed with the new snapshot; reload on demand.
         self.storage_aggregate = None;
+        self.storage_unit_contents.clear();
         self.storage_aggregate_error.clear();
         self.view.page = 0;
     }
@@ -557,6 +574,11 @@ impl CasemoveApp {
                 reprice(item, &self.price_cache);
             }
         }
+        for items in self.storage_unit_contents.values_mut() {
+            for item in items {
+                reprice(item, &self.price_cache);
+            }
+        }
         for row in &mut self.storage_grouped {
             reprice(&mut row.representative, &self.price_cache);
         }
@@ -581,6 +603,7 @@ impl CasemoveApp {
             .unwrap_or_default();
         if ids.is_empty() {
             self.storage_aggregate = Some(Vec::new());
+            self.storage_unit_contents.clear();
             self.storage_aggregate_error.clear();
             return;
         }
@@ -806,6 +829,7 @@ impl CasemoveApp {
         self.set_inventory(None);
         self.inventory_open = false;
         self.overview_open = false;
+        self.storage_open = false;
         self.inventory_error.clear();
         self.inventory_busy = false;
         self.storage_selection = None;
@@ -942,7 +966,8 @@ impl eframe::App for CasemoveApp {
 
         // The account list belongs to the home/login screen; a restored page
         // is only shown while signed in, so mirror the central panel.
-        let on_page = self.profile.is_some() && (self.inventory_open || self.overview_open);
+        let on_page =
+            self.profile.is_some() && (self.inventory_open || self.overview_open || self.storage_open);
         if !on_page {
             egui::SidePanel::right("saved-accounts")
                 .resizable(false)
@@ -967,6 +992,8 @@ impl eframe::App for CasemoveApp {
                     overview_view::show(ui, self);
                 } else if self.inventory_open && self.profile.is_some() {
                     inventory_view::show(ui, self);
+                } else if self.storage_open && self.profile.is_some() {
+                    storage_view::show(ui, self);
                 } else {
                     login::show(ui, self);
                 }
@@ -994,6 +1021,7 @@ impl CasemoveApp {
             if label.clicked() {
                 self.inventory_open = false;
                 self.overview_open = false;
+                self.storage_open = false;
             }
         });
         ui.add_space(16.0);
@@ -1022,20 +1050,19 @@ impl CasemoveApp {
         });
         ui.add_space(16.0);
 
-        let nav: [(&str, &str); 2] = [
-            ("Overview", egui_phosphor::regular::CHART_LINE),
-            ("Inventory", egui_phosphor::regular::ARCHIVE),
+        let nav: [(&str, &str, &'static str); 3] = [
+            ("Overview", egui_phosphor::regular::CHART_LINE, "overview"),
+            ("Inventory", egui_phosphor::regular::ARCHIVE, "inventory"),
+            ("Storage", egui_phosphor::regular::VAULT, "storage"),
         ];
         let width = ui.available_width();
-        for (name, glyph) in nav {
-            let is_overview = name == "Overview";
-            let is_inventory = !is_overview;
-            let enabled = self.profile.is_some() && !self.session_busy;
-            let current = if is_overview {
-                self.overview_open
-            } else {
-                self.inventory_open && !self.overview_open
+        for (name, glyph, key) in nav {
+            let current = match key {
+                "overview" => self.overview_open,
+                "inventory" => self.inventory_open,
+                _ => self.storage_open,
             };
+            let enabled = self.profile.is_some() && !self.session_busy;
             let label = format!("{glyph}  {name}");
             let response = ui
                 .add_enabled_ui(enabled, |ui| {
@@ -1046,9 +1073,10 @@ impl CasemoveApp {
                 })
                 .inner;
             if response.clicked() {
-                self.overview_open = is_overview;
-                self.inventory_open = is_inventory;
-                self.save_view(if is_overview { "overview" } else { "inventory" });
+                self.overview_open = key == "overview";
+                self.inventory_open = key == "inventory";
+                self.storage_open = key == "storage";
+                self.save_view(key);
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {
