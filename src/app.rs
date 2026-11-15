@@ -28,6 +28,10 @@ pub struct LoginForm {
     pub qr_remember: bool,
 }
 
+/// Bounds for the persisted UI scale.
+const MIN_ZOOM: f32 = 0.6;
+const MAX_ZOOM: f32 = 3.0;
+
 #[derive(Default, Clone)]
 pub struct MoveLine {
     pub name: String,
@@ -92,6 +96,8 @@ pub struct CasemoveApp {
     pub saved_page: usize,
     /// Last persisted table columns, so changes are saved once each.
     pub saved_columns: inventory_view::Columns,
+    /// Last persisted UI scale, so zooming is written once it settles.
+    pub saved_zoom: f32,
     /// Account row currently being dragged to reorder the saved list.
     pub drag_account: Option<String>,
 
@@ -161,6 +167,12 @@ impl CasemoveApp {
                 _ => (false, false, false),
             };
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
+        let zoom = core
+            .store_get::<f32>("ui.zoom")
+            .filter(|zoom| zoom.is_finite())
+            .unwrap_or(1.0)
+            .clamp(MIN_ZOOM, MAX_ZOOM);
+        cc.egui_ctx.options_mut(|options| options.zoom_factor = zoom);
         let columns = core
             .store_get::<inventory_view::Columns>("ui.columns")
             .unwrap_or_default();
@@ -196,6 +208,7 @@ impl CasemoveApp {
             sidebar_width,
             saved_page,
             saved_columns: columns,
+            saved_zoom: zoom,
             drag_account: None,
             inventory: None,
             pending_inventory_events: Vec::new(),
@@ -856,6 +869,14 @@ impl CasemoveApp {
         }));
     }
 
+    /// Persists the UI scale so zoom survives a restart.
+    pub fn save_zoom(&self, zoom: f32) {
+        let core = self.core.clone();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.zoom", zoom);
+        }));
+    }
+
     /// Persists the inventory table's page.
     pub fn save_page(&self) {
         let core = self.core.clone();
@@ -1336,6 +1357,15 @@ impl eframe::App for CasemoveApp {
             )
             .show(ctx, |ui| self.sidebar(ui));
         self.persist_sidebar_width(sidebar.response.rect.width(), ctx);
+
+        // The saved scale is applied during construction above; Cmd+/-/0 are
+        // handled by egui itself and land in the options at the end of the
+        // pass that consumed them, so the write below lags one frame at most.
+        let zoom = ctx.zoom_factor();
+        if (zoom - self.saved_zoom).abs() > 0.001 {
+            self.saved_zoom = zoom;
+            self.save_zoom(zoom);
+        }
 
         // The account list belongs to the home/login screen; a restored page
         // is only shown while signed in, so mirror the central panel.
