@@ -2276,7 +2276,7 @@ impl CasemoveApp {
                             |ui| {
                                 ui.label(
                                     egui::RichText::new(
-                                        item.price.map(&money).unwrap_or_default(),
+                                        item.price.map(money).unwrap_or_default(),
                                     )
                                     .size(theme::MUTED_SIZE)
                                     .color(theme::MUTED),

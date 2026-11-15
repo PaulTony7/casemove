@@ -256,6 +256,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut export = false;
     let mut out = SectionOut::default();
     let mut column_edits = ColumnEdits::default();
+    let mut footer: Option<Footer> = None;
+    // The pager's buttons grow with the UI zoom, so the strip is measured
+    // from the pager's own size instead of a fixed height.
+    let footer_height = FOOTER_HEIGHT.max(PAGER_BUTTON * ui.ctx().zoom_factor() + 16.0);
+    let available = ui.available_rect_before_wrap();
 
     let shortcuts = Shortcuts {
         focus_search: ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)),
@@ -263,22 +268,74 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             && !egui::Popup::is_any_open(ui.ctx()),
     };
 
-    theme::page()
-        .show(ui, |ui| {
-            let page = Page {
-                shortcuts: &shortcuts,
-                out: &mut out,
-                refresh: &mut refresh,
-                sign_out: &mut sign_out,
-                export: &mut export,
-                column_edits: &mut column_edits,
-            };
-            if app.storage_selection.is_some() {
-                storage_section(ui, app, page, &mut back);
-            } else {
-                main_section(ui, app, page);
-            }
-        });
+    // The page stops above the band while the table is shown, so the card and
+    // its shadow never reach the bottom edge.
+    let page_rect = egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(
+            available.right(),
+            (available.bottom() - PAGE_BAND_GAP - footer_height).max(available.top()),
+        ),
+    );
+    let filled = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(page_rect), |ui| {
+            theme::page().show(ui, |ui| {
+                let page = Page {
+                    shortcuts: &shortcuts,
+                    out: &mut out,
+                    footer: &mut footer,
+                    refresh: &mut refresh,
+                    sign_out: &mut sign_out,
+                    export: &mut export,
+                    column_edits: &mut column_edits,
+                };
+                if app.storage_selection.is_some() {
+                    storage_section(ui, app, page, &mut back);
+                } else {
+                    main_section(ui, app, page);
+                }
+            })
+        })
+        .inner;
+
+    // Without a pager, the page is a single block filling the view down to
+    // the band; then it owns the band's space too.
+    let page_rect = if footer.is_none() {
+        egui::Rect::from_min_max(
+            available.min,
+            egui::pos2(available.right(), filled.response.rect.bottom()),
+        )
+    } else {
+        page_rect
+    };
+
+    // The pager band anchors to the bottom edge of the view: opaque, on its
+    // own layer so nothing paints over it, and running the view's full width
+    // even though the pager's content stays aligned with the page's margins.
+    let band = egui::Rect::from_min_max(
+        egui::pos2(available.left(), page_rect.bottom() + PAGE_BAND_GAP),
+        available.max,
+    );
+    let mut footer_out = SectionOut::default();
+    if let Some(mut footer) = footer {
+        let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("inventory-footer"));
+        ui.scope_builder(
+            egui::UiBuilder::new().layer_id(layer).max_rect(band),
+            |ui| {
+                ui.set_clip_rect(band);
+                footer_bar(
+                    ui,
+                    &mut app.view,
+                    &mut footer_out,
+                    Footer {
+                        labels: std::mem::take(&mut footer.labels),
+                        ..footer
+                    },
+                );
+            },
+        );
+        out.move_selected |= footer_out.move_selected;
+    }
 
     if back {
         app.close_storage_contents();
@@ -340,6 +397,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 struct Page<'a> {
     shortcuts: &'a Shortcuts,
     out: &'a mut SectionOut,
+    /// Where the section leaves its pager's contents for the bottom band.
+    footer: &'a mut Option<Footer>,
     refresh: &'a mut bool,
     sign_out: &'a mut bool,
     export: &'a mut bool,
@@ -350,6 +409,7 @@ fn main_section(ui: &mut egui::Ui, app: &mut CasemoveApp, page: Page<'_>) {
     let Page {
         shortcuts,
         out,
+        footer,
         refresh,
         sign_out,
         export,
@@ -430,6 +490,7 @@ fn main_section(ui: &mut egui::Ui, app: &mut CasemoveApp, page: Page<'_>) {
     let uses = SectionUses {
         shortcuts,
         out,
+        footer,
         export,
         column_edits,
     };
@@ -494,6 +555,7 @@ fn storage_section(ui: &mut egui::Ui, app: &mut CasemoveApp, page: Page<'_>, bac
     let uses = SectionUses {
         shortcuts: page.shortcuts,
         out: page.out,
+        footer: page.footer,
         export: page.export,
         column_edits: page.column_edits,
     };
@@ -559,6 +621,7 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
     let SectionUses {
         shortcuts,
         out,
+        footer: section_footer,
         export,
         column_edits,
     } = uses;
@@ -629,6 +692,19 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
     let withdraw_busy = app.withdraw_busy.clone();
     let rt = app.rt.handle().clone();
     let mut footer = FooterState::default();
+    // The pager lives in the page's bottom band, outside this card; the card
+    // just leaves room for it and hands its contents over.
+    *section_footer = Some(Footer {
+        total,
+        page: view.page,
+        pages,
+        all_rows: rows
+            .iter()
+            .filter(|row| selectable_row(&row.representative))
+            .map(|row| (row.representative.id.clone(), row.combined_qty))
+            .collect(),
+        labels: Vec::new(),
+    });
     theme::card().show(ui, |ui| {
         card_header(
             ui,
@@ -636,21 +712,13 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
         );
 
         let available = ui.available_rect_before_wrap();
-        // The pager's buttons grow with the UI zoom, so the band is measured
-        // from the pager's own size instead of a fixed height.
-        let footer_height = (FOOTER_HEIGHT.max(PAGER_BUTTON * ui.ctx().zoom_factor() + 16.0))
+        let band_height = (FOOTER_HEIGHT.max(PAGER_BUTTON * ui.ctx().zoom_factor() + 16.0))
             .min(available.height());
-        // A gap keeps the table's last row and hairline clear of the footer.
-        let footer_top = (available.bottom() - footer_height).max(available.top());
-        let footer_rect = egui::Rect::from_min_max(
-            egui::pos2(available.left(), footer_top),
-            available.max,
-        );
         let table_rect = egui::Rect::from_min_max(
             available.min,
             egui::pos2(
                 available.right(),
-                (footer_top - TABLE_GAP).max(available.top()),
+                (available.bottom() - band_height - TABLE_GAP).max(available.top()),
             ),
         );
 
@@ -671,24 +739,6 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
             if let Some(index) = footer.clicked_row {
                 apply_row_click(view, &interactive, index);
             }
-        });
-        ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
-            footer_bar(
-                ui,
-                view,
-                out,
-                Footer {
-                    total,
-                    page: view.page,
-                    pages,
-                    all_rows: rows
-                        .iter()
-                        .filter(|row| selectable_row(&row.representative))
-                        .map(|row| (row.representative.id.clone(), row.combined_qty))
-                        .collect(),
-                    labels: std::mem::take(&mut footer.labels),
-                },
-            );
         });
     });
 }
@@ -766,6 +816,7 @@ fn apply_row_click(view: &mut InventoryViewState, rows: &[InteractiveRow], index
 struct SectionUses<'a> {
     shortcuts: &'a Shortcuts,
     out: &'a mut SectionOut,
+    footer: &'a mut Option<Footer>,
     export: &'a mut bool,
     column_edits: &'a mut ColumnEdits,
 }
@@ -1324,13 +1375,24 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, disabled: bool, hover: &str) -> e
 
 // --- table -----------------------------------------------------------------
 
+/// The space between table columns, in points. It is a fixed length rather
+/// than a multiple of the text size, so a zoom step moves it with every other
+/// length instead of letting it crowd or balloon next to the labels.
+pub(crate) fn column_gap() -> f32 {
+    theme::COLUMN_GAP
+}
+
 const FOOTER_HEIGHT: f32 = 44.0;
 /// The pager's page buttons; the footer band grows with the zoom to hold them.
 const PAGER_BUTTON: f32 = 28.0;
 /// Breathing room between the table's last row and the footer bar.
 const TABLE_GAP: f32 = 12.0;
+/// Clearance between the page and the pager band under it.
+const PAGE_BAND_GAP: f32 = 12.0;
 /// The item column never shrinks below this, whatever else is visible.
 const MIN_ITEM_WIDTH: f32 = 220.0;
+/// Width of the accent bar marking a selected row's left edge.
+const SELECTION_BAR_WIDTH: f32 = 3.0;
 /// Base width of the free-growing text columns (wear, category).
 const TEXT_COLUMN_WIDTH: f32 = 130.0;
 /// The filter popover's fixed width and scrolling body cap.
@@ -1401,8 +1463,9 @@ impl Cell {
     }
 
     /// The column's comfortable width; `Item` claims what the others leave.
-    fn fixed_width(self) -> f32 {
-        match self {
+    /// Sized against the UI zoom so the labels keep their room at any scale.
+    fn fixed_width(self, scale: f32) -> f32 {
+        let base = match self {
             Self::Wear | Self::Category => TEXT_COLUMN_WIDTH,
             Self::Rarity => 72.0,
             Self::Qty => 40.0,
@@ -1413,16 +1476,17 @@ impl Cell {
             Self::Id => 112.0,
             Self::Actions => 26.0,
             Self::Item => 0.0,
-        }
+        };
+        base * scale
     }
 
-    fn width(self, spare: f32) -> egui_extras::Column {
+    fn width(self, spare: f32, scale: f32) -> egui_extras::Column {
         match self {
-            Self::Item => egui_extras::Column::remainder().at_least(200.0),
+            Self::Item => egui_extras::Column::remainder().at_least(MIN_ITEM_WIDTH * scale),
             // Fixed columns size to their content so none spills right when
             // the window narrows.
-            Self::Actions => egui_extras::Column::exact(self.fixed_width()),
-            _ => egui_extras::Column::initial(self.fixed_width() + spare * self.stretch())
+            Self::Actions => egui_extras::Column::exact(self.fixed_width(scale)),
+            _ => egui_extras::Column::initial(self.fixed_width(scale) + spare * self.stretch())
                 .clip(true),
         }
     }
@@ -1485,13 +1549,14 @@ fn table(
 
     // Everything fits: fixed columns that would leave no room for the name
     // are dropped, and the rest share what is left.
+    let scale = ui.ctx().zoom_factor();
     let width = ui.available_width();
-    fit_columns(&mut columns, width);
-    let gaps = theme::COLUMN_GAP * (columns.len().saturating_sub(1) as f32);
+    fit_columns(&mut columns, width, scale);
+    let gaps = column_gap() * (columns.len().saturating_sub(1) as f32);
     let fixed: f32 = columns
         .iter()
         .filter(|cell| **cell != Cell::Item)
-        .map(|cell| cell.fixed_width())
+        .map(|cell| cell.fixed_width(scale))
         .sum();
     // Narrow columns give way first; if even the minimums overflow, the whole
     // table scrolls sideways rather than spilling past the card.
@@ -1499,57 +1564,51 @@ fn table(
     let content_width = if spare > 0.0 {
         width
     } else {
-        gaps + fixed + MIN_ITEM_WIDTH
+        gaps + fixed + MIN_ITEM_WIDTH * scale
     };
 
     // Wider gaps between columns, so each one reads as its own block.
-    ui.spacing_mut().item_spacing.x = theme::COLUMN_GAP;
+    let gap = column_gap();
+    ui.spacing_mut().item_spacing.x = gap;
     let sorted_desc = view.sort_desc;
 
-    // Columns that do not fit at their minimums scroll sideways instead of
-    // squeezing the item column into nothing. The band height is the caller's,
-    // so the table can never grow into the footer.
-    // Scroll bars take their own strip here, so they never cover a row. The
-    // horizontal strip is reserved up front: egui only learns it is needed
-    // after laying the content out, which would leave the last row hidden.
-    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
-    let overflow = content_width > width;
-    let reserved = if overflow {
-        ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin
-    } else {
-        0.0
-    };
-    let scroll = egui::ScrollArea::both()
-        .id_salt(("items-scroll", section_salt(section)))
-        .auto_shrink([false, false])
-        .max_height(height - reserved);
-    let scroll = if content_width > width {
-        scroll.min_scrolled_width(width)
-    } else {
-        scroll
-    };
-    // The inner content is only as tall as the band minus the reserved
-    // horizontal bar, so the table body shrinks to match instead of
-    // re-filling the full band and hiding its last row under the bar.
-    let inner_height = height - reserved;
-    let mut output = Vec::new();
-    scroll.show_viewport(ui, |ui, _| {
-        let inner =
-            egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(content_width, inner_height));
-        output = ui
+    // Everything fits when the item column still gets its floor, give or take
+    // the point egui rounds by; then the table renders directly and no scroll
+    // area (and so no horizontal bar) exists at all.
+    let inner_height = height;
+    if content_width <= width + 1.0 {
+        let inner = egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(width, inner_height));
+        return ui
             .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                table_body(
-                    ui,
-                    view,
-                    rows,
-                    context,
-                    footer,
-                    columns,
-                    sorted_desc,
-                )
+                table_body(ui, view, rows, context, footer, columns, sorted_desc, false)
             })
             .inner;
-    });
+    }
+
+    // Otherwise the table pans sideways. Its bars take their own strip, so
+    // they never cover a row, and the horizontal strip is reserved up front:
+    // egui only learns it is needed after laying the content out, which would
+    // leave the last row hidden under it.
+    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+    let reserved = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
+    let inner_height = height - reserved;
+    let mut output = Vec::new();
+    egui::ScrollArea::both()
+        .id_salt(("items-scroll", section_salt(section)))
+        .auto_shrink([false, false])
+        .max_height(inner_height)
+        .min_scrolled_width(width)
+        .show_viewport(ui, |ui, _| {
+            let inner = egui::Rect::from_min_size(
+                ui.min_rect().min,
+                egui::vec2(content_width, inner_height),
+            );
+            output = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                    table_body(ui, view, rows, context, footer, columns, sorted_desc, true)
+                })
+                .inner;
+        });
     output
 }
 
@@ -1563,6 +1622,7 @@ fn table_body(
     footer: &mut FooterState,
     columns: Vec<Cell>,
     sorted_desc: bool,
+    outer_scrolls: bool,
 ) -> Vec<InteractiveRow> {
     let TableContext {
         out,
@@ -1574,14 +1634,15 @@ fn table_body(
     // The inner `ui` is sized to the content, so `remainder` and the spare
     // share resolve against it rather than the viewport.
     let width = ui.available_width();
+    let scale = ui.ctx().zoom_factor();
     let fixed: f32 = columns
         .iter()
         .filter(|cell| **cell != Cell::Item)
-        .map(|cell| cell.fixed_width())
+        .map(|cell| cell.fixed_width(scale))
         .sum();
-    let spare = (width - theme::COLUMN_GAP * (columns.len().saturating_sub(1) as f32) - fixed)
-        .max(0.0);
+    let spare = (width - column_gap() * (columns.len().saturating_sub(1) as f32) - fixed).max(0.0);
     let _ = withdraw_busy;
+    let height = ui.available_height();
     let mut interactive: Vec<InteractiveRow> = Vec::with_capacity(rows.len());
     let shift = ui.input(|input| input.modifiers.shift);
     let header_rect = egui::Rect::from_min_size(
@@ -1593,12 +1654,14 @@ fn table_body(
         .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .id_salt(("items-table", section_salt(section)))
-        // The surrounding scroll area owns vertical movement, so the table
-        // lays every row out at its own height and nothing scrolls twice.
-        .vscroll(false)
-        .auto_shrink([false, false]);
+        // When an outer area pans sideways it already scrolls vertically, so
+        // the table must not scroll a second time; on its own it does.
+        .vscroll(!outer_scrolls)
+        .auto_shrink([false, false])
+        .min_scrolled_height(height)
+        .max_scroll_height(height);
     for cell in &columns {
-        table_builder = table_builder.column(cell.width(spare));
+        table_builder = table_builder.column(cell.width(spare, scale));
     }
 
     let mut sort_click: Option<SortKey> = None;
@@ -1644,7 +1707,14 @@ fn table_body(
 
             for cell in &columns {
                 let (_, response) = row.col(|ui| {
-                    cell_contents(ui, *cell, item, qty, currency, shows_storage_button(section));
+                    cell_contents(
+                        ui,
+                        *cell,
+                        item,
+                        qty,
+                        currency,
+                        shows_storage_button(section),
+                    );
                 });
                 if response.clicked() {
                     clicked = true;
@@ -1676,7 +1746,7 @@ fn table_body(
                 painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(rect.left(), rect.top() + 6.0),
-                        egui::pos2(rect.left() + 3.0, rect.bottom() - 6.0),
+                        egui::pos2(rect.left() + SELECTION_BAR_WIDTH, rect.bottom() - 6.0),
                     ),
                     egui::CornerRadius::same(2),
                     theme::CHIP_ACTIVE,
@@ -1704,15 +1774,15 @@ fn table_body(
 /// Drops optional columns until the item column has at least
 /// `MIN_ITEM_WIDTH`; the broad text columns go first, then the widest of the
 /// rest, and `Select`/`Actions` always stay.
-fn fit_columns(columns: &mut Vec<Cell>, width: f32) {
+fn fit_columns(columns: &mut Vec<Cell>, width: f32, scale: f32) {
     let pinned = |cell: &Cell| matches!(cell, Cell::Item | Cell::Actions);
     while columns.len() > 2 {
         let fixed: f32 = columns
             .iter()
             .filter(|cell| **cell != Cell::Item)
-            .map(|cell| cell.fixed_width())
+            .map(|cell| cell.fixed_width(scale))
             .sum();
-        if width - fixed >= MIN_ITEM_WIDTH {
+        if width - fixed >= MIN_ITEM_WIDTH * scale {
             return;
         }
         let widest = columns
@@ -1723,7 +1793,7 @@ fn fit_columns(columns: &mut Vec<Cell>, width: f32) {
                 let broad = |cell: &&Cell| matches!(cell, Cell::Wear | Cell::Category);
                 broad(left)
                     .cmp(&broad(right))
-                    .then_with(|| left.fixed_width().total_cmp(&right.fixed_width()))
+                    .then_with(|| left.fixed_width(scale).total_cmp(&right.fixed_width(scale)))
             })
             .map(|(index, _)| index);
         match widest {
@@ -1811,6 +1881,8 @@ fn fill_cell(
 ) {
     match cell {
         Cell::Item => {
+            // Clear of the selection bar painted on the row's left edge.
+            ui.add_space(SELECTION_BAR_WIDTH + 7.0);
             identity(ui, item, qty);
         }
         Cell::Rarity => {
@@ -2114,13 +2186,15 @@ fn icon_menu(glyph: &str, text: &str) -> String {
     format!("{glyph}  {text}")
 }
 
-/// The pinned bar under the table: totals, selection, and the pager.
+/// The pager band at the bottom of the view.
+#[derive(Default)]
 struct Footer {
+    /// Filtered rows across every page, before paging.
     total: usize,
     page: usize,
     pages: usize,
-    /// Every row the filters allow, across all pages, so "Select all" can
-    /// take the whole result set rather than the page in view.
+    /// Every selectable row the filters allow, across all pages, so "Select
+    /// all" can take the whole result set rather than the page in view.
     all_rows: Vec<(String, usize)>,
     /// `(row id, item name)` for the shown batch, so the selection strip can
     /// name what is about to move.
@@ -2136,8 +2210,10 @@ fn footer_bar(ui: &mut egui::Ui, view: &mut InventoryViewState, out: &mut Sectio
         labels,
     } = footer;
 
-    // A hairline separates the pager from the last row, like the reference.
+    // An opaque band: nothing shows through from behind it.
     let rect = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(rect, 0, theme::BG);
+    // A hairline separates the pager from the card above, like the reference.
     ui.painter().hline(
         rect.x_range(),
         rect.top(),
@@ -2436,7 +2512,7 @@ mod tests {
         let fixed: f32 = columns
             .iter()
             .filter(|cell| **cell != Cell::Item)
-            .map(|cell| cell.fixed_width())
+            .map(|cell| cell.fixed_width(1.0))
             .sum();
         let narrow = 300.0;
         assert!(narrow < gaps + fixed + MIN_ITEM_WIDTH);
@@ -2491,7 +2567,16 @@ mod tests {
         assert_eq!(Cell::Rarity.stretch(), 0.0);
         assert_eq!(Cell::Wear.stretch(), 0.0);
         assert!(Cell::Wear.stretch() < Cell::Category.stretch());
-        assert!(Cell::Rarity.fixed_width() <= 72.0);
+        assert!(Cell::Rarity.fixed_width(1.0) <= 72.0);
+    }
+
+    #[test]
+    fn column_widths_follow_the_ui_zoom() {
+        // Columns that carry text grow with the zoom so their labels are not
+        // squeezed or clipped; the gap stays a fixed number of points.
+        assert_eq!(Cell::Wear.fixed_width(2.0), Cell::Wear.fixed_width(1.0) * 2.0);
+        assert_eq!(Cell::Id.fixed_width(1.5), Cell::Id.fixed_width(1.0) * 1.5);
+        assert_eq!(theme::COLUMN_GAP, column_gap());
     }
 
     #[test]
@@ -2507,16 +2592,16 @@ mod tests {
             Cell::Rarity,
             Cell::Actions,
         ];
-        fit_columns(&mut columns, 1200.0);
+        fit_columns(&mut columns, 1200.0, 1.0);
         assert_eq!(columns.len(), 9, "a wide window keeps everything");
 
-        fit_columns(&mut columns, 600.0);
+        fit_columns(&mut columns, 600.0, 1.0);
         assert_eq!(columns.first(), Some(&Cell::Item));
         assert_eq!(columns.last(), Some(&Cell::Actions));
         let fixed: f32 = columns
             .iter()
             .filter(|cell| **cell != Cell::Item)
-            .map(|cell| cell.fixed_width())
+            .map(|cell| cell.fixed_width(1.0))
             .sum();
         assert!(600.0 - fixed >= MIN_ITEM_WIDTH);
         assert!(!columns.contains(&Cell::Category), "widest dropped first");
