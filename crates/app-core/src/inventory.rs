@@ -644,6 +644,38 @@ impl Core {
         self.casket_move(casket_id, item_id, false).await
     }
 
+    /// Renames a storage unit, waiting for the GC's `NameItem` acknowledgement.
+    pub async fn rename_storage(&self, casket_id: String, name: String) -> Result<(), String> {
+        let casket = parse_storage_id(&casket_id)?;
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err("Enter a name for the storage unit.".to_owned());
+        }
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        session
+            .with_connection(|_connection, generation| async move {
+                let state = inventory.0.try_lock().map_err(|_| {
+                    "An inventory or storage request is already in progress.".to_owned()
+                })?;
+                let slot = state
+                    .as_ref()
+                    .filter(|slot| slot.generation == generation)
+                    .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+                storage_item_count(&slot.items, casket)?;
+                let client = slot.client.as_ref().ok_or_else(|| {
+                    "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                        .to_owned()
+                })?;
+                client
+                    .rename_storage(casket, &name)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
     async fn casket_move(
         &self,
         casket_id: String,

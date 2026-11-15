@@ -8,7 +8,7 @@ use crate::inventory::{self, GroupedItem};
 use crate::theme;
 use app_commands::InventoryItem;
 use eframe::egui;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 const PAGE_SIZE: usize = inventory::PAGE_SIZE;
 
@@ -18,6 +18,19 @@ const PAGE_SIZE: usize = inventory::PAGE_SIZE;
 enum Section {
     Inventory,
     Storage,
+}
+
+/// Deferred actions collected while rendering a section, applied after the
+/// `&mut CasemoveApp` borrow ends.
+#[derive(Default)]
+struct SectionOut {
+    open_storage: Option<(String, String)>,
+    move_to: Option<(String, String)>,
+    withdraw: Option<String>,
+    rename: Option<(String, String)>,
+    clipboard: Option<String>,
+    selectable: bool,
+    move_selected: bool,
 }
 
 /// Optional table columns; the item id stays hidden until asked for.
@@ -57,6 +70,8 @@ pub struct InventoryViewState {
     pub selected_majors: HashSet<String>,
     pub selected_properties: HashSet<String>,
     pub columns: Columns,
+    /// Selected grouped rows: representative id -> selected quantity.
+    pub selected: BTreeMap<String, usize>,
 }
 
 impl Default for InventoryViewState {
@@ -72,6 +87,7 @@ impl Default for InventoryViewState {
             selected_majors: HashSet::new(),
             selected_properties: HashSet::new(),
             columns: Columns::default(),
+            selected: BTreeMap::new(),
         }
     }
 }
@@ -86,9 +102,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut back = false;
     let mut refresh = false;
     let mut sign_out = false;
-    let mut open_storage: Option<(String, String)> = None;
-    let mut move_to: Option<(String, String)> = None;
-    let mut clipboard: Option<String> = None;
+    let mut out = SectionOut::default();
 
     let shortcuts = Shortcuts {
         focus_search: ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)),
@@ -114,16 +128,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             }
             ui.add_space(8.0);
             if app.storage_selection.is_some() {
-                storage_section(ui, app, &shortcuts, &mut clipboard);
+                storage_section(ui, app, &shortcuts, &mut out);
             } else {
-                main_section(
-                    ui,
-                    app,
-                    &shortcuts,
-                    &mut open_storage,
-                    &mut move_to,
-                    &mut clipboard,
-                );
+                main_section(ui, app, &shortcuts, &mut out);
             }
         });
 
@@ -136,13 +143,34 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     if sign_out {
         app.sign_out();
     }
-    if let Some((casket_id, name)) = open_storage {
+    if let Some((casket_id, name)) = out.open_storage {
         app.open_storage_contents(casket_id, name);
     }
-    if let Some((item_id, item_name)) = move_to {
+    if let Some((item_id, item_name)) = out.move_to {
         app.begin_move_to_storage(item_id, item_name);
     }
-    if let Some(text) = clipboard {
+    if let Some(item_id) = out.withdraw {
+        app.withdraw_item(item_id);
+    }
+    if let Some((casket_id, name)) = out.rename {
+        app.begin_rename_storage(casket_id, name);
+    }
+    if out.move_selected {
+        let lines = app
+            .grouped
+            .iter()
+            .filter_map(|row| {
+                let quantity = *app.view.selected.get(&row.representative.id)?;
+                Some(crate::app::MoveLine {
+                    name: row.representative.name.clone(),
+                    ids: row.combined_ids.clone(),
+                    quantity,
+                })
+            })
+            .collect();
+        app.begin_bulk_move(lines);
+    }
+    if let Some(text) = out.clipboard {
         ui.ctx().copy_text(text);
     }
     if app.view.page != app.saved_page {
@@ -242,9 +270,7 @@ fn main_section(
     ui: &mut egui::Ui,
     app: &mut CasemoveApp,
     shortcuts: &Shortcuts,
-    open_storage: &mut Option<(String, String)>,
-    move_to: &mut Option<(String, String)>,
-    clipboard: &mut Option<String>,
+    out: &mut SectionOut,
 ) {
     if app.inventory.is_none() {
         ui.horizontal_top(|ui| {
@@ -271,6 +297,13 @@ fn main_section(
             .then_some("Showing the last loaded snapshot.");
         error_box(ui, &app.inventory_error, note);
     }
+    if !app.storage_notice.is_empty() {
+        ui.label(
+            egui::RichText::new(&app.storage_notice)
+                .size(11.0)
+                .color(theme::GREEN),
+        );
+    }
 
     if app.inventory.is_none() {
         if !app.inventory_busy && app.inventory_error.is_empty() {
@@ -289,22 +322,14 @@ fn main_section(
         return;
     }
 
-    items_section(
-        ui,
-        app,
-        Section::Inventory,
-        shortcuts,
-        open_storage,
-        move_to,
-        clipboard,
-    );
+    items_section(ui, app, Section::Inventory, shortcuts, out);
 }
 
 fn storage_section(
     ui: &mut egui::Ui,
     app: &mut CasemoveApp,
     shortcuts: &Shortcuts,
-    clipboard: &mut Option<String>,
+    out: &mut SectionOut,
 ) {
     let name = app
         .storage_selection
@@ -316,6 +341,16 @@ fn storage_section(
 
     if !app.storage_error.is_empty() {
         error_box(ui, &app.storage_error, None);
+    }
+    if !app.withdraw_error.is_empty() {
+        error_box(ui, &app.withdraw_error.clone(), None);
+    }
+    if !app.storage_notice.is_empty() {
+        ui.label(
+            egui::RichText::new(&app.storage_notice)
+                .size(11.0)
+                .color(theme::GREEN),
+        );
     }
     if app.storage_busy {
         ui.label(
@@ -333,15 +368,7 @@ fn storage_section(
         return;
     }
 
-    items_section(
-        ui,
-        app,
-        Section::Storage,
-        shortcuts,
-        &mut None::<(String, String)>,
-        &mut None::<(String, String)>,
-        clipboard,
-    );
+    items_section(ui, app, Section::Storage, shortcuts, out);
 }
 
 /// Toolbar, active-filter chips, table, and footer for one dataset.
@@ -350,9 +377,7 @@ fn items_section(
     app: &mut CasemoveApp,
     section: Section,
     shortcuts: &Shortcuts,
-    open_storage: &mut Option<(String, String)>,
-    move_to: &mut Option<(String, String)>,
-    clipboard: &mut Option<String>,
+    out: &mut SectionOut,
 ) {
     let view: &mut InventoryViewState = match section {
         Section::Inventory => &mut app.view,
@@ -434,6 +459,11 @@ fn items_section(
             available.min,
             egui::pos2(available.right(), footer_rect.top() - 6.0),
         );
+        let selectable: Vec<&GroupedItem> = rows
+            .iter()
+            .copied()
+            .filter(|row| selectable_row(&row.representative))
+            .collect();
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(table_rect),
             |ui| {
@@ -442,19 +472,21 @@ fn items_section(
                     &mut app.images,
                     view,
                     &rows[start..end],
+                    &selectable,
                     TableActions {
-                        open_storage,
-                        move_to,
-                        clipboard,
+                        out,
+                        withdraw_busy: app.withdraw_busy.clone(),
                         show: section == Section::Inventory,
+                        storage: section == Section::Storage,
                     },
                 );
             },
         );
+        out.selectable = section == Section::Inventory;
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(footer_rect),
             |ui| {
-                footer(ui, view, total, start, end, value_label);
+                footer(ui, view, out, total, start, end, value_label);
             },
         );
     }
@@ -936,10 +968,14 @@ fn column_visible(def: &ColumnDef, columns: &Columns, show_actions: bool) -> boo
 }
 
 struct TableActions<'a> {
-    open_storage: &'a mut Option<(String, String)>,
-    move_to: &'a mut Option<(String, String)>,
-    clipboard: &'a mut Option<String>,
+    out: &'a mut SectionOut,
+    withdraw_busy: Option<String>,
     show: bool,
+    storage: bool,
+}
+
+fn selectable_row(item: &InventoryItem) -> bool {
+    item.moveable && !item.is_storage_unit
 }
 
 fn table(
@@ -947,16 +983,17 @@ fn table(
     images: &mut ImageCache,
     view: &mut InventoryViewState,
     rows: &[&GroupedItem],
+    selectable: &[&GroupedItem],
     actions: TableActions<'_>,
 ) {
     let TableActions {
-        open_storage,
-        move_to,
-        clipboard,
+        out,
+        withdraw_busy,
         show,
+        storage,
     } = actions;
-    let show_actions = show;
     let columns = view.columns;
+    let show_actions = columns.actions;
     let defs: Vec<&ColumnDef> = COLUMN_DEFS
         .iter()
         .filter(|def| column_visible(def, &columns, show_actions))
@@ -977,6 +1014,9 @@ fn table(
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .id_salt("items-table")
         .max_scroll_height(table_height);
+    if show {
+        builder = builder.column(egui_extras::Column::exact(26.0));
+    }
     let last = defs.len() - 1;
     for (index, def) in defs.iter().enumerate() {
         let column = if index == last {
@@ -986,9 +1026,31 @@ fn table(
         };
         builder = builder.column(column);
     }
+    let all_selected = !selectable.is_empty()
+        && selectable
+            .iter()
+            .all(|row| view.selected.contains_key(&row.representative.id));
 
     builder
         .header(theme::HEADER_HEIGHT, |mut header| {
+            if show {
+                header.col(|ui| {
+                    let mut checked = all_selected;
+                    if ui.checkbox(&mut checked, "").changed() {
+                        if checked {
+                            for row in selectable {
+                                view.selected
+                                    .entry(row.representative.id.clone())
+                                    .or_insert(row.combined_qty);
+                            }
+                        } else {
+                            for row in selectable {
+                                view.selected.remove(&row.representative.id);
+                            }
+                        }
+                    }
+                });
+            }
             for def in &defs {
                 let active = def.sort == Some(view.sort.as_str());
                 let (_, response) = header.col(|ui| {
@@ -1035,6 +1097,21 @@ fn table(
                 let grouped = rows[row.index()];
                 let item = &grouped.representative;
                 let display_qty = grouped.combined_qty;
+
+                if show {
+                    row.col(|ui| {
+                        if selectable_row(item) {
+                            let mut checked = view.selected.contains_key(&item.id);
+                            if ui.checkbox(&mut checked, "").changed() {
+                                if checked {
+                                    view.selected.insert(item.id.clone(), display_qty);
+                                } else {
+                                    view.selected.remove(&item.id);
+                                }
+                            }
+                        }
+                    });
+                }
 
                 let (_, identity) = row.col(|ui| identity_cell(ui, images, item));
                 identity.on_hover_text(format!("Item ID: {}", item.id));
@@ -1122,7 +1199,7 @@ fn table(
                         );
                     });
                 }
-                if columns.actions && show_actions {
+                if columns.actions {
                     row.col(|ui| {
                         if item.is_storage_unit {
                             let contents = egui::Button::new(format!(
@@ -1131,7 +1208,24 @@ fn table(
                             ))
                             .fill(theme::RAISED);
                             if ui.add(contents).clicked() {
-                                *open_storage = Some((item.id.clone(), item.name.clone()));
+                                out.open_storage = Some((item.id.clone(), item.name.clone()));
+                            }
+                        } else if storage {
+                            let busy = withdraw_busy.as_deref() == Some(item.id.as_str());
+                            let label = if busy {
+                                "Withdrawing...".to_owned()
+                            } else {
+                                format!("{}  Withdraw", egui_phosphor::regular::DOWNLOAD_SIMPLE)
+                            };
+                            let button = egui::Button::new(label).fill(theme::RAISED);
+                            if ui
+                                .add_enabled(
+                                    !busy && withdraw_busy.is_none() && item.moveable,
+                                    button,
+                                )
+                                .clicked()
+                            {
+                                out.withdraw = Some(item.id.clone());
                             }
                         } else if item.moveable {
                             let move_button = egui::Button::new(format!(
@@ -1140,7 +1234,7 @@ fn table(
                             ))
                             .fill(theme::RAISED);
                             if ui.add(move_button).clicked() {
-                                *move_to = Some((item.id.clone(), item.name.clone()));
+                                out.move_to = Some((item.id.clone(), item.name.clone()));
                             }
                         }
                     });
@@ -1156,7 +1250,7 @@ fn table(
                         ))
                         .clicked()
                     {
-                        *clipboard = Some(item.name.clone());
+                        out.clipboard = Some(item.name.clone());
                         ui.close();
                     }
                     if ui
@@ -1166,7 +1260,7 @@ fn table(
                         ))
                         .clicked()
                     {
-                        *clipboard = Some(item.id.clone());
+                        out.clipboard = Some(item.id.clone());
                         ui.close();
                     }
                     if item.is_storage_unit
@@ -1177,11 +1271,40 @@ fn table(
                             ))
                             .clicked()
                     {
-                        *open_storage = Some((item.id.clone(), item.name.clone()));
+                        out.open_storage = Some((item.id.clone(), item.name.clone()));
+                        ui.close();
+                    }
+                    if item.is_storage_unit
+                        && ui
+                            .button(format!(
+                                "{}  Rename",
+                                egui_phosphor::regular::PENCIL_SIMPLE
+                            ))
+                            .clicked()
+                    {
+                        let name = item
+                            .custom_name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| item.name.clone());
+                        out.rename = Some((item.id.clone(), name));
+                        ui.close();
+                    }
+                    if storage
+                        && item.moveable
+                        && ui
+                            .button(format!(
+                                "{}  Withdraw to inventory",
+                                egui_phosphor::regular::DOWNLOAD_SIMPLE
+                            ))
+                            .clicked()
+                    {
+                        out.withdraw = Some(item.id.clone());
                         ui.close();
                     }
                     if item.moveable
                         && !item.is_storage_unit
+                        && !storage
                         && ui
                             .button(format!(
                                 "{}  Move to storage",
@@ -1189,7 +1312,7 @@ fn table(
                             ))
                             .clicked()
                     {
-                        *move_to = Some((item.id.clone(), item.name.clone()));
+                        out.move_to = Some((item.id.clone(), item.name.clone()));
                         ui.close();
                     }
                 });
@@ -1289,6 +1412,7 @@ fn tradehold_days(item: &InventoryItem) -> Option<i64> {
 fn footer(
     ui: &mut egui::Ui,
     view: &mut InventoryViewState,
+    out: &mut SectionOut,
     total: usize,
     start: usize,
     end: usize,
@@ -1302,6 +1426,26 @@ fn footer(
                 .size(theme::MUTED_SIZE)
                 .color(theme::MUTED),
         );
+        if out.selectable && !view.selected.is_empty() {
+            let items: usize = view.selected.values().sum();
+            ui.label(
+                egui::RichText::new(format!("{items} selected"))
+                    .size(theme::MUTED_SIZE)
+                    .color(theme::ACCENT),
+            );
+            if ui
+                .add(egui::Button::new(format!(
+                    "{}  Move selected",
+                    egui_phosphor::regular::UPLOAD_SIMPLE
+                )))
+                .clicked()
+            {
+                out.move_selected = true;
+            }
+            if ui.button("Clear").clicked() {
+                view.selected.clear();
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let pages = total.div_ceil(PAGE_SIZE).max(1);

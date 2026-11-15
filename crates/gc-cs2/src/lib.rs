@@ -8,7 +8,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 use steam_client::{AppsEvent, GCProtoHeader, SteamClient, SteamEvent, services::GCMessage};
-use steam_vent::{Connection, ConnectionTrait, GameCoordinator};
+use steam_vent::{Connection, ConnectionTrait, GameCoordinator, NetMessage};
 use steam_vent_proto_common::{RpcMessage, RpcMessageWithKind};
 use steam_vent_proto_csgo::{
     GCHandshake,
@@ -371,6 +371,55 @@ impl InventoryClient {
         self.casket_move_steam_vent(casket_id, item_id, false).await
     }
 
+    /// Renames a storage unit, waiting for the `NameItem` notification.
+    pub async fn rename_storage(
+        &self,
+        casket_id: u64,
+        name: &str,
+    ) -> Result<(), InventoryError> {
+        if casket_id == 0 || name.trim().is_empty() {
+            return Err(InventoryError::InvalidRequest);
+        }
+        if let Some(browser) = &self.browser {
+            return browser.rename_storage(casket_id, name).await;
+        }
+        self.rename_storage_steam_vent(casket_id, name).await
+    }
+
+    async fn rename_storage_steam_vent(
+        &self,
+        casket_id: u64,
+        name: &str,
+    ) -> Result<(), InventoryError> {
+        let coordinator = self
+            .coordinator
+            .as_ref()
+            .ok_or(InventoryError::ConnectionFailed)?;
+        // Subscribe before sending so the acknowledgement cannot be missed.
+        let mut notifications = pin!(coordinator.on::<CasketNotification>());
+        coordinator
+            .send(NameItemRequest {
+                item_id: casket_id,
+                name: name.to_owned(),
+            })
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)?;
+        let wait = async {
+            while let Some(message) = notifications.next().await {
+                let message = message.map_err(|_| InventoryError::ConnectionFailed)?;
+                if message.0.request() == NAME_ITEM_NOTIFICATION
+                    && message.0.item_id.first() == Some(&casket_id)
+                {
+                    return Ok(());
+                }
+            }
+            Err(InventoryError::ConnectionFailed)
+        };
+        tokio::time::timeout(CASKET_MOVE_TIMEOUT, wait)
+            .await
+            .map_err(|_| InventoryError::TimedOut)?
+    }
+
     async fn casket_move_steam_vent(
         &self,
         casket_id: u64,
@@ -603,6 +652,31 @@ impl BrowserInventoryClient {
                 if let Some(CasketEvent::Notification { item_ids, request }) =
                     browser_casket_event(&message)?
                     && request == expected
+                    && item_ids.first() == Some(&casket_id)
+                {
+                    return Ok(());
+                }
+            }
+            Err(InventoryError::ConnectionFailed)
+        })
+        .await
+        .map_err(|_| InventoryError::TimedOut)?
+    }
+
+    async fn rename_storage(&self, casket_id: u64, name: &str) -> Result<(), InventoryError> {
+        let payload = name_item_payload(casket_id, name);
+        let mut messages = self.messages.lock().await;
+        self.client
+            .lock()
+            .await
+            .send_to_gc(730, EGCItemMsg::k_EMsgGCNameItem as i32 as u32, &payload)
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)?;
+        tokio::time::timeout(CASKET_MOVE_TIMEOUT, async {
+            while let Some(message) = messages.recv().await {
+                if let Some(CasketEvent::Notification { item_ids, request }) =
+                    browser_casket_event(&message)?
+                    && request == NAME_ITEM_NOTIFICATION
                     && item_ids.first() == Some(&casket_id)
                 {
                     return Ok(());
@@ -851,9 +925,45 @@ const CASKET_CONTENTS_NOTIFICATION: u32 = 1012;
 const CASKET_ADDED_NOTIFICATION: u32 = 1013;
 /// `k_EGCItemCustomizationNotification_CasketRemoved`.
 const CASKET_REMOVED_NOTIFICATION: u32 = 1014;
+/// `k_EGCItemCustomizationNotification_NameItem`.
+const NAME_ITEM_NOTIFICATION: u32 = 1006;
 /// Low and high 32 bits of the containing casket ID on an item.
 const CASKET_ID_LOW_ATTRIBUTE: u32 = 272;
 const CASKET_ID_HIGH_ATTRIBUTE: u32 = 273;
+
+/// Legacy `globaloffensive.nameItem(0, item, name)` payload: name-tag id,
+/// item id, a zero byte, then a null-terminated name. `NameItem` is sent as a
+/// non-protobuf GC message, so the body is written by hand.
+#[derive(Debug)]
+struct NameItemRequest {
+    item_id: u64,
+    name: String,
+}
+
+fn name_item_payload(item_id: u64, name: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(18 + name.len());
+    body.extend_from_slice(&0u64.to_le_bytes());
+    body.extend_from_slice(&item_id.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(name.as_bytes());
+    body.push(0);
+    body
+}
+
+impl steam_vent::message::EncodableMessage for NameItemRequest {
+    fn write_body<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        writer.write_all(&name_item_payload(self.item_id, &self.name))
+    }
+
+    fn encode_size(&self) -> usize {
+        18 + self.name.len()
+    }
+}
+
+impl NetMessage for NameItemRequest {
+    type KindEnum = EGCItemMsg;
+    const KIND: Self::KindEnum = EGCItemMsg::k_EMsgGCNameItem;
+}
 
 /// Local GC message wrappers with kinds; the proto crate provides
 /// `RpcMessageWithKind` for none of these messages.
@@ -1341,8 +1451,20 @@ mod tests {
     }
 
     #[test]
-    fn reads_added_modified_and_removed_objects_from_multi_updates() {
-        let object = |type_id, data: Vec<u8>| SingleObject {
+    fn name_item_payload_matches_the_legacy_layout() {
+        let payload = name_item_payload(0x0102_0304_0506_0708, "Unit");
+        assert_eq!(&payload[..8], &[0; 8]);
+        assert_eq!(
+            &payload[8..16],
+            &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
+        assert_eq!(payload[16], 0);
+        assert_eq!(&payload[17..], b"Unit\0");
+        assert_eq!(payload.len(), 22);
+    }
+
+    #[test]
+    fn reads_added_modified_and_removed_objects_from_multi_updates() {        let object = |type_id, data: Vec<u8>| SingleObject {
             type_id: Some(type_id),
             object_data: Some(data),
             ..Default::default()

@@ -41,31 +41,31 @@ sticker-kit images, and case images use inventory definition IDs. Offline
 conversion tests and opt-in live catalog/download tests cover these paths;
 live-account rendering is still unverified.
 
-**Recommended next feature:** Remove-from storage flows plus item selection, building
-on the move-to acknowledgement path and the storage contents view.
+**Recommended next feature:** Item/sticker image coverage and agent-specific
+enrichment, then the pricing/currency and CSV export work.
 
 ## Storage Units
 
-- [ ] Search, filter, and sort storage contents.
-- [ ] Pagination or virtualization for storage contents.
+- [x] Search, filter, and sort storage contents.
+- [x] Pagination or virtualization for storage contents.
 - [x] Display storage counts, capacity, names, and values in a storage-management view.
-- [ ] Rename storage units.
-- [ ] Reconcile storage counts/cache after items move during loading.
+- [x] Rename storage units.
+- [x] Reconcile storage counts/cache after items move during loading.
 
 ## Transfers And Bulk Moves
 
 - [x] Transfer-to page and destination-unit selection.
-- [ ] Transfer-from page and source-unit selection.
-- [ ] Select individual/grouped items and requested quantities.
-- [ ] Select all filtered items and clear selection.
+- [x] Transfer-from page and source-unit selection.
+- [x] Select individual/grouped items and requested quantities.
+- [x] Select all filtered items and clear selection.
 - [x] Validate ownership, moveability, and destination capacity before sending.
 - [x] Add one item to a storage unit with correlated GC acknowledgement.
-- [ ] Remove one item from a storage unit with correlated GC acknowledgement.
+- [x] Remove one item from a storage unit with correlated GC acknowledgement.
 - [x] Handle timeouts and ambiguous results without blindly retrying mutations.
-- [ ] Bulk-move queue, review modal, and progress display.
-- [ ] Partial-failure reporting and inventory/storage reconciliation.
-- [ ] Fast-mode behavior, pacing, and acknowledgement semantics.
-- [ ] Safe interruption/sign-out during a move operation.
+- [x] Bulk-move queue, review modal, and progress display.
+- [x] Partial-failure reporting and inventory/storage reconciliation.
+- [x] Fast-mode behavior, pacing, and acknowledgement semantics.
+- [x] Safe interruption/sign-out during a move operation.
 - [ ] Item-position operations; confirm user-facing legacy usage before porting.
 - [ ] Equip operations; confirm user-facing legacy usage before porting.
 

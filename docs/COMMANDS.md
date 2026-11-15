@@ -54,9 +54,9 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 |---|---|---|---|
 | `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Retained GC client also streams SO create/update/remove deltas to the UI; live-account verification pending | ◐ |
 | `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Validates the ID against the loaded inventory, derives the expected count from attribute 270, and returns only notification-confirmed complete contents; errors return `Err` instead of `[0]` | ◐ |
-| `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ☐ |
-| `storage_remove_item(casket_id, item_id, fast) -> MoveAck` | `removeFromStorageUnit` + `-reply` | Same pattern, `CasketRemoved` | ☐ |
-| `storage_rename(item_id, new_name) -> MoveAck` | `renameStorageUnit` + `-reply` | `nameItem` + `NameItem` notification | ☐ |
+| `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ◐ |
+| `storage_remove_item(casket_id, item_id, fast) -> MoveAck` | `removeFromStorageUnit` + `-reply` | Same pattern, `CasketRemoved` | ◐ |
+| `storage_rename(item_id, new_name) -> MoveAck` | `renameStorageUnit` + `-reply` | `nameItem` (non-protobuf raw body) + `NameItem` notification | ◐ |
 | `items_set_positions(dict)` | `setItemsPositions` | Raw `SetItemPositions` GC send, fire-and-forget | ☐ |
 | `items_equip(item_id, class)` | `setItemEquipped` | `AdjustItemEquippedState`; exposed in legacy preload but unused by UI — confirm before porting | ☐ |
 | `export_csv(data)` | `download` | Legacy writes `~/Downloads/casemove.csv` from inside `createWindow` (re-registered per window) | ☐ |

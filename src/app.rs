@@ -29,10 +29,27 @@ pub struct LoginForm {
 }
 
 #[derive(Default, Clone)]
+pub struct MoveLine {
+    pub name: String,
+    pub ids: Vec<String>,
+    pub quantity: usize,
+}
+
+#[derive(Default, Clone)]
 pub struct MoveDialog {
-    pub item_id: String,
-    pub item_name: String,
+    pub lines: Vec<MoveLine>,
     pub query: String,
+    pub busy: bool,
+    pub done: usize,
+    pub total: usize,
+    pub error: String,
+}
+
+#[derive(Default, Clone)]
+pub struct RenameDialog {
+    pub casket_id: String,
+    pub current_name: String,
+    pub name: String,
     pub busy: bool,
     pub error: String,
 }
@@ -98,6 +115,12 @@ pub struct CasemoveApp {
     pub storage_unit_contents: std::collections::BTreeMap<String, Vec<InventoryItem>>,
     pub storage_query: String,
     pub move_dialog: Option<MoveDialog>,
+    pub rename_dialog: Option<RenameDialog>,
+    /// Item id currently being withdrawn from the open storage unit.
+    pub withdraw_busy: Option<String>,
+    pub withdraw_error: String,
+    /// Result of the last move/rename batch shown above the table.
+    pub storage_notice: String,
     pub price_cache: pricing::LiveCache,
     pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
@@ -187,6 +210,10 @@ impl CasemoveApp {
             storage_unit_contents: std::collections::BTreeMap::new(),
             storage_query: String::new(),
             move_dialog: None,
+            rename_dialog: None,
+            withdraw_busy: None,
+            withdraw_error: String::new(),
+            storage_notice: String::new(),
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
             view: inventory_view::InventoryViewState {
@@ -471,20 +498,123 @@ impl CasemoveApp {
                     }
                 }
             }
-            Message::StorageMove(attempt, result) => {
+            Message::StorageMove {
+                attempt,
+                moved,
+                total,
+                result,
+            } => {
                 if attempt != self.attempt {
                     return;
                 }
+                let lines = self
+                    .move_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.lines.clone())
+                    .unwrap_or_default();
                 match result {
                     Ok(()) => {
                         self.move_dialog = None;
+                        self.withdraw_error.clear();
+                        self.storage_notice = format!(
+                            "Moved {moved} {} to storage.",
+                            if moved == 1 { "item" } else { "items" }
+                        );
+                        self.remove_selected(&lines);
                         // Counts and contents changed; load them on demand.
                         self.storage_aggregate = None;
                         self.storage_unit_contents.clear();
                         self.refresh_inventory();
                     }
                     Err(error) => {
-                        if let Some(dialog) = &mut self.move_dialog {
+                        if total == 1 {
+                            if let Some(dialog) = &mut self.move_dialog {
+                                dialog.busy = false;
+                                dialog.error = error;
+                            }
+                        } else {
+                            self.move_dialog = None;
+                            self.remove_selected(&lines);
+                            self.storage_notice = format!(
+                                "Moved {moved} of {total} items. {error}"
+                            );
+                            self.storage_aggregate = None;
+                            self.storage_unit_contents.clear();
+                            self.refresh_inventory();
+                        }
+                    }
+                }
+            }
+            Message::StorageMoveProgress(attempt, done, total) => {
+                if attempt == self.attempt
+                    && let Some(dialog) = &mut self.move_dialog
+                {
+                    dialog.done = done;
+                    dialog.total = total;
+                }
+            }
+            Message::StorageWithdraw {
+                attempt,
+                session_attempt,
+                casket,
+                item_id,
+                result,
+            } => {
+                if attempt != self.attempt || session_attempt != self.attempt {
+                    return;
+                }
+                self.withdraw_busy = None;
+                if self
+                    .storage_selection
+                    .as_ref()
+                    .is_some_and(|(selected, _)| *selected == casket)
+                {
+                    match result {
+                        Ok(()) => {
+                            self.withdraw_error.clear();
+                            self.storage_notice = "Moved item back to inventory.".into();
+                            self.remove_storage_item(&casket, &item_id);
+                            self.refresh_inventory();
+                        }
+                        Err(error) => self.withdraw_error = error,
+                    }
+                }
+            }
+            Message::StorageRename {
+                attempt,
+                session_attempt,
+                casket,
+                name,
+                result,
+            } => {
+                if attempt != self.attempt || session_attempt != self.attempt {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        self.rename_dialog = None;
+                        self.storage_notice = format!("Renamed storage unit to {name}.");
+                        if let Some(item) = self
+                            .inventory
+                            .as_mut()
+                            .and_then(|snapshot| {
+                                snapshot
+                                    .items
+                                    .iter_mut()
+                                    .find(|item| item.id == casket)
+                            })
+                        {
+                            item.custom_name = Some(name.clone());
+                        }
+                        if let Some((selected, current)) = &mut self.storage_selection
+                            && *selected == casket
+                        {
+                            *current = name;
+                        }
+                        self.refresh_inventory();
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = &mut self.rename_dialog {
                             dialog.busy = false;
                             dialog.error = error;
                         }
@@ -492,6 +622,42 @@ impl CasemoveApp {
                 }
             }
             Message::Image { url, result } => self.images.insert(ctx, url, result),
+        }
+    }
+
+    fn remove_selected(&mut self, lines: &[MoveLine]) {
+        for line in lines {
+            self.view.selected.remove(&line.ids[0]);
+        }
+    }
+
+    /// Drops an item from the open storage unit's local lists so the table
+    /// reflects the withdrawal before the refreshed inventory arrives.
+    fn remove_storage_item(&mut self, casket: &str, item_id: &str) {
+        if let Some(items) = &mut self.storage_contents {
+            items.retain(|item| item.id != item_id);
+            self.storage_grouped = crate::inventory::group_items(items.clone());
+            self.storage_majors = self
+                .storage_grouped
+                .iter()
+                .filter_map(|row| row.representative.major.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+        }
+        if let Some(items) = self.storage_unit_contents.get_mut(casket) {
+            items.retain(|item| item.id != item_id);
+        }
+        if let Some(items) = &mut self.storage_aggregate {
+            items.retain(|item| item.id != item_id);
+        }
+        if let Some(unit) = self
+            .inventory
+            .as_mut()
+            .and_then(|snapshot| snapshot.items.iter_mut().find(|item| item.id == casket))
+            && let Some(count) = unit.storage_item_count
+        {
+            unit.storage_item_count = Some(count.saturating_sub(1));
         }
     }
 
@@ -508,6 +674,12 @@ impl CasemoveApp {
         majors.sort();
         majors.dedup();
         self.majors = majors;
+        let present: std::collections::HashSet<String> = self
+            .grouped
+            .iter()
+            .map(|row| row.representative.id.clone())
+            .collect();
+        self.view.selected.retain(|id, _| present.contains(id));
         self.inventory = snapshot;
         // Contents may have changed with the new snapshot; reload on demand.
         self.storage_aggregate = None;
@@ -871,6 +1043,10 @@ impl CasemoveApp {
         self.storage_error.clear();
         self.storage_unit_contents.clear();
         self.move_dialog = None;
+        self.rename_dialog = None;
+        self.withdraw_busy = None;
+        self.withdraw_error.clear();
+        self.storage_notice.clear();
         self.session_busy = true;
         let core = self.core.clone();
         let reply = self.reply.clone();
@@ -897,9 +1073,24 @@ impl CasemoveApp {
         if self.session_busy || self.profile.is_none() {
             return;
         }
+        self.storage_notice.clear();
         self.move_dialog = Some(MoveDialog {
-            item_id,
-            item_name,
+            lines: vec![MoveLine {
+                name: item_name,
+                ids: vec![item_id],
+                quantity: 1,
+            }],
+            ..Default::default()
+        });
+    }
+
+    pub fn begin_bulk_move(&mut self, lines: Vec<MoveLine>) {
+        if self.session_busy || self.profile.is_none() || lines.is_empty() {
+            return;
+        }
+        self.storage_notice.clear();
+        self.move_dialog = Some(MoveDialog {
+            lines,
             ..Default::default()
         });
     }
@@ -913,13 +1104,111 @@ impl CasemoveApp {
         }
         dialog.busy = true;
         dialog.error.clear();
-        let item_id = dialog.item_id.clone();
+        let mut ids = Vec::new();
+        for line in &dialog.lines {
+            ids.extend(line.ids.iter().take(line.quantity).cloned());
+        }
+        if ids.is_empty() {
+            dialog.busy = false;
+            dialog.error = "Select at least one item to move.".into();
+            return;
+        }
+        dialog.done = 0;
+        dialog.total = ids.len();
+        let total = ids.len();
         let attempt = self.attempt;
         let core = self.core.clone();
         let reply = self.reply.clone();
         self.rt.spawn(async move {
-            let result = core.move_to_storage(casket_id, item_id).await;
-            reply.send(Message::StorageMove(attempt, result));
+            let mut moved = 0;
+            let mut first_error = None;
+            for item_id in ids {
+                match core.move_to_storage(casket_id.clone(), item_id).await {
+                    Ok(()) => moved += 1,
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+                reply.send(Message::StorageMoveProgress(attempt, moved, total));
+            }
+            reply.send(Message::StorageMove {
+                attempt,
+                moved,
+                total,
+                result: match first_error {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                },
+            });
+        });
+    }
+
+    /// Takes one item out of the open storage unit.
+    pub fn withdraw_item(&mut self, item_id: String) {
+        let Some((casket_id, _)) = self.storage_selection.clone() else {
+            return;
+        };
+        if self.session_busy || self.profile.is_none() || self.withdraw_busy.is_some() {
+            return;
+        }
+        self.withdraw_busy = Some(item_id.clone());
+        self.withdraw_error.clear();
+        self.storage_notice.clear();
+        let attempt = self.attempt;
+        let session_attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = core.move_from_storage(casket_id.clone(), item_id.clone()).await;
+            reply.send(Message::StorageWithdraw {
+                attempt,
+                session_attempt,
+                casket: casket_id,
+                item_id,
+                result,
+            });
+        });
+    }
+
+    pub fn begin_rename_storage(&mut self, casket_id: String, current_name: String) {
+        if self.session_busy || self.profile.is_none() {
+            return;
+        }
+        self.rename_dialog = Some(RenameDialog {
+            casket_id,
+            name: current_name.clone(),
+            current_name,
+            ..Default::default()
+        });
+        self.storage_notice.clear();
+    }
+
+    pub fn rename_storage(&mut self) {
+        let Some(dialog) = &mut self.rename_dialog else {
+            return;
+        };
+        if dialog.busy {
+            return;
+        }
+        dialog.busy = true;
+        dialog.error.clear();
+        let casket_id = dialog.casket_id.clone();
+        let name = dialog.name.trim().to_owned();
+        let attempt = self.attempt;
+        let session_attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = core.rename_storage(casket_id.clone(), name.clone()).await;
+            reply.send(Message::StorageRename {
+                attempt,
+                session_attempt,
+                casket: casket_id,
+                name,
+                result,
+            });
         });
     }
 
@@ -940,6 +1229,8 @@ impl CasemoveApp {
         self.storage_selection = Some((casket_id.clone(), name));
         self.storage_contents = None;
         self.storage_error.clear();
+        self.withdraw_error.clear();
+        self.storage_notice.clear();
         self.storage_busy = true;
         self.storage_attempt += 1;
         let attempt = self.storage_attempt;
@@ -965,6 +1256,9 @@ impl CasemoveApp {
         self.storage_majors.clear();
         self.storage_busy = false;
         self.storage_error.clear();
+        self.withdraw_busy = None;
+        self.withdraw_error.clear();
+        self.storage_notice.clear();
     }
 
     pub fn remove_account(&mut self, username: String) {
@@ -1064,6 +1358,7 @@ impl eframe::App for CasemoveApp {
 
         self.removal_dialog(ctx);
         self.move_to_storage_dialog(ctx);
+        self.rename_storage_dialog(ctx);
     }
 }
 
@@ -1474,6 +1769,7 @@ impl CasemoveApp {
         units.sort_by_key(|unit| unit.1.to_lowercase());
 
         let busy = dialog.busy;
+        let mut lines = dialog.lines.clone();
         let mut query = dialog.query.clone();
         let mut target: Option<String> = None;
         let mut cancel = false;
@@ -1484,10 +1780,61 @@ impl CasemoveApp {
                     .size(19.0)
                     .strong(),
             );
-            ui.label(egui::RichText::new(&dialog.item_name).color(theme::MUTED));
+            let total: usize = dialog.lines.iter().map(|line| line.quantity).sum();
+            let available: usize = dialog.lines.iter().map(|line| line.ids.len()).sum();
+            if dialog.lines.len() == 1 {
+                let line = &dialog.lines[0];
+                ui.label(
+                    egui::RichText::new(&line.name)
+                        .color(theme::MUTED),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} groups · {total} of {available} items",
+                        dialog.lines.len()
+                    ))
+                    .color(theme::MUTED),
+                );
+            }
             if !dialog.error.is_empty() {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(&dialog.error).size(12.0).color(theme::ERROR));
+            }
+            if busy && dialog.total > 0 {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Moving {} of {}...",
+                        dialog.done, dialog.total
+                    ))
+                    .size(12.0)
+                    .color(theme::MUTED),
+                );
+            }
+            if dialog.lines.len() > 1 {
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                    for line in &mut lines {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&line.name)
+                                    .size(12.0)
+                                    .color(theme::MUTED),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let max = line.ids.len().max(1);
+                                    ui.add(
+                                        egui::DragValue::new(&mut line.quantity)
+                                            .range(1..=max as u64),
+                                    );
+                                },
+                            );
+                        });
+                    }
+                });
             }
             ui.add_space(10.0);
             ui.add(
@@ -1510,7 +1857,7 @@ impl CasemoveApp {
                     );
                 }
                 for (id, name, count) in visible {
-                    let full = *count >= 1000;
+                    let full = *count >= 1000 || *count + total > 1000;
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(name).size(13.0));
@@ -1526,7 +1873,7 @@ impl CasemoveApp {
                                 let label = if busy {
                                     "Moving..."
                                 } else if full {
-                                    "Full"
+                                    "Not enough space"
                                 } else {
                                     "Move here"
                                 };
@@ -1561,11 +1908,83 @@ impl CasemoveApp {
         });
         if let Some(dialog) = &mut self.move_dialog {
             dialog.query = query;
+            dialog.lines = lines;
         }
         if cancel {
             self.move_dialog = None;
         } else if let Some(id) = target {
             self.move_item_to_storage(id);
+        }
+    }
+
+    fn rename_storage_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.rename_dialog.clone() else {
+            return;
+        };
+        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.rename_dialog = None;
+            return;
+        }
+        let busy = dialog.busy;
+        let mut name = dialog.name.clone();
+        let mut cancel = false;
+        let mut confirm = false;
+        egui::Modal::new(egui::Id::new("rename_storage")).show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            ui.label(
+                egui::RichText::new("Rename storage unit")
+                    .size(19.0)
+                    .strong(),
+            );
+            ui.label(
+                egui::RichText::new(&dialog.current_name)
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+            if !dialog.error.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&dialog.error).size(12.0).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .hint_text("New name")
+                    .desired_width(f32::INFINITY),
+            );
+            if !busy {
+                field.request_focus();
+            }
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let confirm_button = egui::Button::new(
+                    egui::RichText::new(if busy { "Renaming..." } else { "Rename" })
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::ACCENT);
+                if ui
+                    .add_enabled(
+                        !busy && !name.trim().is_empty(),
+                        confirm_button,
+                    )
+                    .clicked()
+                {
+                    confirm = true;
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Cancel"))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        if let Some(dialog) = &mut self.rename_dialog {
+            dialog.name = name;
+        }
+        if cancel {
+            self.rename_dialog = None;
+        } else if confirm {
+            self.rename_storage();
         }
     }
 

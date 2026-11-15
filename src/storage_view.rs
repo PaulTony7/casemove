@@ -20,6 +20,7 @@ struct UnitRow {
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut load = false;
     let mut open: Option<(String, String)> = None;
+    let mut rename: Option<(String, String)> = None;
 
     egui::Frame::NONE
         .inner_margin(egui::Margin {
@@ -51,7 +52,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 
             search(ui, app);
             ui.add_space(6.0);
-            table(ui, app, &rows, &mut open);
+            table(ui, app, &rows, &mut open, &mut rename);
         });
 
     if load {
@@ -65,6 +66,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             app.storage_open = false;
             app.save_view("inventory");
         }
+    }
+    if let Some((id, name)) = rename {
+        app.begin_rename_storage(id, name);
     }
 }
 
@@ -172,6 +176,7 @@ fn table(
     app: &mut CasemoveApp,
     rows: &[UnitRow],
     open: &mut Option<(String, String)>,
+    rename: &mut Option<(String, String)>,
 ) {
     let query = app.storage_query.to_lowercase();
     let visible: Vec<&UnitRow> = rows
@@ -194,7 +199,7 @@ fn table(
         .column(egui_extras::Column::remainder().at_least(200.0))
         .column(egui_extras::Column::initial(width * 0.26).at_least(140.0))
         .column(egui_extras::Column::initial(width * 0.16).at_least(100.0))
-        .column(egui_extras::Column::initial(96.0));
+        .column(egui_extras::Column::initial(150.0));
 
     builder
         .header(theme::HEADER_HEIGHT, |mut header| {
@@ -236,6 +241,12 @@ fn table(
                 row.col(|ui| {
                     if ui.button("Open").clicked() {
                         *open = Some((unit.id.clone(), unit.name.clone()));
+                    }
+                    if ui
+                        .button(format!("{}  Rename", egui_phosphor::regular::PENCIL_SIMPLE))
+                        .clicked()
+                    {
+                        *rename = Some((unit.id.clone(), unit.name.clone()));
                     }
                 });
             });

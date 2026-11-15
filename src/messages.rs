@@ -31,8 +31,31 @@ pub enum Message {
     /// All storage units' contents as `(casket id, items)` pairs, `(attempt,
     /// result)`.
     StorageAll(u64, Result<Vec<(String, Vec<InventoryItem>)>, String>),
-    /// Result of moving one item into a storage unit `(attempt, result)`.
-    StorageMove(u64, Result<(), String>),
+    /// Progress of the running move batch `(attempt, done, total)`.
+    StorageMoveProgress(u64, usize, usize),
+    /// Result of moving items into a storage unit.
+    StorageMove {
+        attempt: u64,
+        moved: usize,
+        total: usize,
+        result: Result<(), String>,
+    },
+    /// Result of taking one item out of a storage unit.
+    StorageWithdraw {
+        attempt: u64,
+        session_attempt: u64,
+        casket: String,
+        item_id: String,
+        result: Result<(), String>,
+    },
+    /// Result of renaming a storage unit.
+    StorageRename {
+        attempt: u64,
+        session_attempt: u64,
+        casket: String,
+        name: String,
+        result: Result<(), String>,
+    },
 }
 
 /// Clonable handle for sending a `Message` and waking the UI.
