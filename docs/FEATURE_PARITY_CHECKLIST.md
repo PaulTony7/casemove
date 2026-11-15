@@ -42,7 +42,7 @@ conversion tests and opt-in live catalog/download tests cover these paths;
 live-account rendering is still unverified.
 
 **Recommended next feature:** Item/sticker image coverage and agent-specific
-enrichment, then the pricing/currency and CSV export work.
+enrichment, then trade-ups.
 
 ## Storage Units
 
@@ -71,15 +71,15 @@ enrichment, then the pricing/currency and CSV export work.
 
 ## Settings And Persistence
 
-- [ ] Settings page and typed settings get/set commands.
-- [ ] Persist column, currency, price-source, and relevant workflow preferences.
-- [ ] Steam-close prompt preference and developer-mode controls.
+- [x] Settings page and typed settings get/set commands.
+- [x] Persist column, currency, price-source, and relevant workflow preferences.
+- [ ] Steam-close prompt preference and developer-mode controls. (Prompt preference persists and shows in Settings; the popup itself and devmode controls are still missing.)
 - [ ] Verify real OS-keyring and legacy-migration behavior on supported platforms.
 
 ## Pricing, Overview, And Reports
 
-- [ ] Currency conversion and locale-aware formatting.
-- [ ] CSV export covering inventory/storage, prices, quantities, wear, and stickers.
+- [x] Currency conversion and locale-aware formatting.
+- [x] CSV export covering inventory/storage, prices, quantities, wear, and stickers.
 
 ## Trade-Ups And Containers
 
@@ -100,7 +100,7 @@ enrichment, then the pricing/currency and CSV export work.
 - [ ] Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - [ ] Verify moves/removals during storage loading and notification ordering.
 - [ ] Golden characterization fixtures for conversion, grouping, filters, sorts, and trade-ups.
-- [ ] CI for workspace tests and Clippy checks.
+- [x] CI for workspace tests and Clippy checks.
 - [ ] Startup, filtering, bulk-move, memory, listener-count, and installer-size metrics.
 - [ ] Re-login/disconnect/reconnect soak tests with stable dispatcher/listener counts.
 - [ ] Platform packaging/signing and final migration/parity sign-off before deleting legacy.

@@ -1,12 +1,13 @@
 use crate::images::{self, ImageCache};
 use crate::messages::{Message, Reply};
-use crate::{icons, inventory_view, login, overview_view, storage_view, theme};
+use crate::{icons, inventory_view, login, overview_view, settings_view, storage_view, theme};
 use app_commands::{
     BrowserTokenLoginParams, InventoryItem, InventorySnapshot, PasswordLoginParams, SavedAccount,
     SteamProfile, WalletInfo,
 };
 use app_core::{AppEvent, Core};
 use eframe::egui;
+use pricing::format_currency;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -90,7 +91,13 @@ pub struct CasemoveApp {
     pub inventory_open: bool,
     pub overview_open: bool,
     pub storage_open: bool,
+    pub settings_open: bool,
     pub overview_by: overview_view::OverviewBy,
+    /// Display currency (legacy `pricing.currency`, default `USD`).
+    pub currency_code: String,
+    pub currency: pricing::Currency,
+    /// Legacy `steamLogin` preference: prompt to close Steam when it is open.
+    pub show_steam_login: bool,
     /// Persisted sidebar width and the last inventory page.
     pub sidebar_width: f32,
     pub saved_page: usize,
@@ -159,14 +166,20 @@ impl CasemoveApp {
             .store_get::<f32>("ui.sidebar")
             .unwrap_or(216.0)
             .clamp(184.0, 320.0);
-        let (inventory_open, overview_open, storage_open) =
+        let (inventory_open, overview_open, storage_open, settings_open) =
             match core.store_get::<String>("ui.view").as_deref() {
-                Some("inventory") => (true, false, false),
-                Some("overview") => (false, true, false),
-                Some("storage") => (false, false, true),
-                _ => (false, false, false),
+                Some("inventory") => (true, false, false, false),
+                Some("overview") => (false, true, false, false),
+                Some("storage") => (false, false, true, false),
+                Some("settings") => (false, false, false, true),
+                _ => (false, false, false, false),
             };
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
+        let currency_code = core
+            .store_get::<String>("pricing.currency")
+            .filter(|code| !code.trim().is_empty())
+            .unwrap_or_else(|| "USD".to_owned());
+        let show_steam_login = core.store_get::<bool>("steamLogin").unwrap_or(true);
         let zoom = core
             .store_get::<f32>("ui.zoom")
             .filter(|zoom| zoom.is_finite())
@@ -204,7 +217,11 @@ impl CasemoveApp {
             inventory_open,
             overview_open,
             storage_open,
+            settings_open,
             overview_by,
+            currency: pricing::Currency::new(&currency_code),
+            currency_code,
+            show_steam_login,
             sidebar_width,
             saved_page,
             saved_columns: columns,
@@ -852,9 +869,75 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists which page was last open (`overview` / `inventory`).
-    pub fn save_view(&self, value: &'static str) {
+    /// Persists the Steam-close popup preference.
+    pub fn save_steam_login(&self) {
         let core = self.core.clone();
+        let value = self.show_steam_login;
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("steamLogin", value);
+        }));
+    }
+
+    /// Changes the display currency: prices re-render with the new rate.
+    pub fn set_currency(&mut self, code: &str) {
+        self.currency_code = code.to_owned();
+        self.currency = pricing::Currency::new(code);
+        let core = self.core.clone();
+        let value = self.currency_code.clone();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("pricing.currency", value);
+        }));
+    }
+
+    /// Formats a USD amount in the selected display currency.
+    pub fn money(&self, amount: f64) -> String {
+        format_currency(&self.currency, amount, 2)
+    }
+
+    /// Writes the legacy `casemove.csv` report (inventory plus every loaded
+    /// storage unit) to the Downloads folder and reveals it.
+    pub fn export_csv(&mut self) {
+        let mut rows: Vec<crate::export::Row> = Vec::new();
+        for row in &self.grouped {
+            rows.push(crate::export::Row {
+                grouped: row,
+                storage_name: None,
+                trade_locked: row.representative.trade_unlock.is_some(),
+            });
+        }
+        let mut reports: Vec<(String, Vec<crate::inventory::GroupedItem>)> = Vec::new();
+        if let Some(units) = &self.inventory {
+            for unit in units.items.iter().filter(|item| item.is_storage_unit) {
+                let Some(contents) = self.storage_unit_contents.get(&unit.id) else {
+                    continue;
+                };
+                let name = unit
+                    .custom_name
+                    .clone()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| unit.name.clone());
+                reports.push((name, crate::inventory::group_items(contents.clone())));
+            }
+        }
+        for (name, grouped) in &reports {
+            for row in grouped {
+                rows.push(crate::export::Row {
+                    grouped: row,
+                    storage_name: Some(name),
+                    trade_locked: row.representative.trade_unlock.is_some(),
+                });
+            }
+        }
+        let csv = crate::export::export(&rows, &self.currency);
+        let path = downloads_dir().join("casemove.csv");
+        self.storage_notice = match write_report(&path, &csv) {
+            Ok(()) => format!("Saved {}", path.display()),
+            Err(error) => format!("Could not save the report: {error}"),
+        };
+    }
+
+    /// Persists which page was last open (`overview` / `inventory`).
+    pub fn save_view(&self, value: &'static str) {        let core = self.core.clone();
         drop(self.rt.spawn_blocking(move || {
             let _ = core.store_set("ui.view", value);
         }));
@@ -1397,6 +1480,8 @@ impl eframe::App for CasemoveApp {
                     inventory_view::show(ui, self);
                 } else if self.storage_open && self.profile.is_some() {
                     storage_view::show(ui, self);
+                } else if self.settings_open {
+                    settings_view::show(ui, self);
                 } else {
                     login::show(ui, self);
                 }
@@ -1455,19 +1540,22 @@ impl CasemoveApp {
         });
         ui.add_space(16.0);
 
-        let nav: [(&str, &str, &'static str); 3] = [
+        let nav: [(&str, &str, &'static str); 4] = [
             ("Overview", egui_phosphor::regular::CHART_LINE, "overview"),
             ("Inventory", egui_phosphor::regular::ARCHIVE, "inventory"),
             ("Storage", egui_phosphor::regular::VAULT, "storage"),
+            ("Settings", egui_phosphor::regular::GEAR, "settings"),
         ];
         let width = ui.available_width();
         for (name, glyph, key) in nav {
             let current = match key {
                 "overview" => self.overview_open,
                 "inventory" => self.inventory_open,
-                _ => self.storage_open,
+                "storage" => self.storage_open,
+                _ => self.settings_open,
             };
-            let enabled = self.profile.is_some() && !self.session_busy;
+            // Settings only needs a local preference store, not a session.
+            let enabled = key == "settings" || (self.profile.is_some() && !self.session_busy);
             let label = format!("{glyph}  {name}");
             let response = ui
                 .add_enabled_ui(enabled, |ui| {
@@ -1481,6 +1569,7 @@ impl CasemoveApp {
                 self.overview_open = key == "overview";
                 self.inventory_open = key == "inventory";
                 self.storage_open = key == "storage";
+                self.settings_open = key == "settings";
                 self.save_view(key);
             }
             if response.hovered() && !enabled {
@@ -1494,6 +1583,7 @@ impl CasemoveApp {
         }
 
         ui.add_space((ui.available_height() - 40.0).max(0.0));
+        let mut sign_out = false;
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(egui_phosphor::regular::SHIELD_CHECK)
@@ -1508,7 +1598,24 @@ impl CasemoveApp {
                 );
                 ui.label(egui::RichText::new("v0.1.0").size(10.0).color(theme::MUTED));
             });
+            if self.profile.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = egui::RichText::new(egui_phosphor::regular::SIGN_OUT)
+                        .size(15.0)
+                        .color(theme::MUTED);
+                    if ui
+                        .add_enabled(!self.session_busy, egui::Button::new(label).frame(false))
+                        .on_hover_text("Sign out")
+                        .clicked()
+                    {
+                        sign_out = true;
+                    }
+                });
+            }
         });
+        if sign_out {
+            self.sign_out();
+        }
     }
 
     // --- status strip -------------------------------------------------------
@@ -2141,6 +2248,46 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The user's Downloads folder, matching legacy `~/Downloads/casemove.csv`.
+fn downloads_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    home.unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Downloads")
+}
+
+/// Writes the report, then reveals it where the platform supports that.
+fn write_report(path: &std::path::Path, csv: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, csv)?;
+    reveal(path);
+    Ok(())
+}
+
+/// Opens the file manager at the report, best effort.
+#[cfg(target_os = "windows")]
+fn reveal(path: &std::path::Path) {
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(path: &std::path::Path) {
+    let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal(path: &std::path::Path) {
+    if let Some(dir) = path.parent() {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
 }
 
 /// Re-resolves one row's price: the bundled snapshot overridden by any live

@@ -1,4 +1,5 @@
 mod app;
+mod export;
 mod icons;
 mod images;
 mod inventory;
@@ -6,6 +7,7 @@ mod inventory_view;
 mod login;
 mod messages;
 mod overview_view;
+mod settings_view;
 mod storage_view;
 mod theme;
 

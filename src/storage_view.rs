@@ -131,7 +131,7 @@ fn header(ui: &mut egui::Ui, app: &CasemoveApp, rows: &[UnitRow], load: &mut boo
                 if items == 1 { "item" } else { "items" }
             );
             if all_loaded {
-                summary.push_str(&format!(" · {}", pricing::format_usd(value)));
+                summary.push_str(&format!(" · {}", app.money(value)));
             }
             ui.label(
                 egui::RichText::new(summary)
@@ -228,7 +228,7 @@ fn table(
                 });
                 row.col(|ui| {
                     let text = if unit.loaded {
-                        pricing::format_usd(unit.value)
+                        app.money(unit.value)
                     } else {
                         "-".into()
                     };

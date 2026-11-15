@@ -239,7 +239,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             }
             let data = overview_data(app);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                cards(ui, &data);
+                cards(ui, &data, &app.currency);
                 ui.add_space(12.0);
                 charts(ui, app, &data);
             });
@@ -331,7 +331,7 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
     });
 }
 
-fn cards(ui: &mut egui::Ui, data: &OverviewData) {
+fn cards(ui: &mut egui::Ui, data: &OverviewData, currency: &pricing::Currency) {
     // Equal content widths: the row fits three frames, their 12px side
     // margins, and the two 10px gaps.
     let width = ((ui.available_width() - 92.0) / 3.0).max(140.0);
@@ -376,7 +376,7 @@ fn cards(ui: &mut egui::Ui, data: &OverviewData) {
                                     .color(theme::MUTED),
                             );
                             ui.label(
-                                egui::RichText::new(pricing::format_usd_whole(value))
+                                egui::RichText::new(pricing::format_currency(currency, value, 0))
                                     .size(17.0)
                                     .strong()
                                     .color(theme::GREEN),
@@ -432,7 +432,7 @@ fn charts(ui: &mut egui::Ui, app: &mut CasemoveApp, data: &OverviewData) {
                     egui::vec2(bar_content, height),
                     egui::Sense::hover(),
                 );
-                paint_bars(&painter, response.rect, &data.bars, by);
+                paint_bars(&painter, response.rect, &data.bars, by, &app.currency);
             });
         egui::Frame::NONE
             .fill(theme::RAISED)
@@ -442,12 +442,18 @@ fn charts(ui: &mut egui::Ui, app: &mut CasemoveApp, data: &OverviewData) {
                     egui::vec2(pie_content, height),
                     egui::Sense::hover(),
                 );
-                paint_pie(&painter, response.rect, data, by);
+                paint_pie(&painter, response.rect, data, by, &app.currency);
             });
     });
 }
 
-fn paint_bars(painter: &egui::Painter, rect: egui::Rect, bars: &[Bar], by: OverviewBy) {
+fn paint_bars(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    bars: &[Bar],
+    by: OverviewBy,
+    currency: &pricing::Currency,
+) {
     painter.text(
         rect.left_top() + egui::vec2(rect.width() / 2.0, 0.0),
         egui::Align2::CENTER_TOP,
@@ -505,7 +511,7 @@ fn paint_bars(painter: &egui::Painter, rect: egui::Rect, bars: &[Bar], by: Overv
             egui::Stroke::new(1.0_f32, theme::SEPARATOR),
         );
         let label = match by {
-            OverviewBy::Price => pricing::format_usd(value),
+            OverviewBy::Price => pricing::format_currency(currency, value, 2),
             OverviewBy::Volume => format!("{}", value as u64),
         };
         painter.text(
@@ -587,7 +593,13 @@ fn paint_segment(painter: &egui::Painter, rect: egui::Rect, rgb: [u8; 3]) {
     );
 }
 
-fn paint_pie(painter: &egui::Painter, rect: egui::Rect, data: &OverviewData, by: OverviewBy) {
+fn paint_pie(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    data: &OverviewData,
+    by: OverviewBy,
+    currency: &pricing::Currency,
+) {
     painter.text(
         rect.left_top() + egui::vec2(rect.width() / 2.0, 0.0),
         egui::Align2::CENTER_TOP,
@@ -679,7 +691,9 @@ fn paint_pie(painter: &egui::Painter, rect: egui::Rect, data: &OverviewData, by:
         );
         let share = value / total * 100.0;
         let detail = match by {
-            OverviewBy::Price => format!("{} · {share:.1}%", pricing::format_usd(*value)),
+            OverviewBy::Price => {
+                format!("{} · {share:.1}%", pricing::format_currency(currency, *value, 2))
+            }
             OverviewBy::Volume => format!("{} · {share:.1}%", *value as u64),
         };
         painter.text(

@@ -59,7 +59,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 | `storage_rename(item_id, new_name) -> MoveAck` | `renameStorageUnit` + `-reply` | `nameItem` (non-protobuf raw body) + `NameItem` notification | ◐ |
 | `items_set_positions(dict)` | `setItemsPositions` | Raw `SetItemPositions` GC send, fire-and-forget | ☐ |
 | `items_equip(item_id, class)` | `setItemEquipped` | `AdjustItemEquippedState`; exposed in legacy preload but unused by UI — confirm before porting | ☐ |
-| `export_csv(data)` | `download` | Legacy writes `~/Downloads/casemove.csv` from inside `createWindow` (re-registered per window) | ☐ |
+| `export_csv(data)` | `download` | Writes `~/Downloads/casemove.csv` with the legacy `downloadReport` header and JSON-quoted fields, formatted in the selected currency, then reveals it | ◐ |
 
 ### Trade-ups & containers
 
@@ -74,7 +74,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
 | `pricing_request(items)` | `getPrice` | Results arrive via `pricing:results` event (same flow as legacy `pricingEmitter`) | ☐ |
-| `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | | ☐ |
+| `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | Display currency + USD→currency rate resolved in-process from the bundled `backup/currency.json` snapshot (`pricing::rate`); no live rate fetch | ◐ |
 | `settings_get(key) -> Value` | `electron-store-get` + `-reply+randomKey` | Legacy appends a random key to the reply channel to dodge `once` collisions — `invoke` makes this unnecessary | ☐ |
 | `settings_set(key, value)` | `electron-store-set` | | ☐ |
 | `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name/Steam-avatar metadata only; no secrets returned | ◐ |

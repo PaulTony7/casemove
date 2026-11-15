@@ -206,21 +206,174 @@ pub fn format_usd_whole(amount: f64) -> String {
 }
 
 fn format_usd_with(amount: f64, decimals: usize) -> String {
-    let negative = amount < 0.0;
-    let rounded = format!("{:.*}", decimals, amount.abs());
-    let (whole, fraction) = rounded.split_once('.').unwrap_or((&rounded, ""));
+    format_currency(&Currency::usd(), amount, decimals)
+}
+
+/// A selectable display currency: its ISO code, symbol, and locale used for
+/// grouping (legacy `Intl.NumberFormat(settings.locale, {currency})`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Currency {
+    pub code: String,
+    pub symbol: String,
+    pub locale: String,
+}
+
+impl Currency {
+    pub fn usd() -> Self {
+        Self {
+            code: "USD".into(),
+            symbol: "$".into(),
+            locale: "en-US".into(),
+        }
+    }
+
+    /// Builds a currency from its ISO code, falling back to `code` as the
+    /// symbol for codes without a known sign.
+    pub fn new(code: &str) -> Self {
+        let code = code.trim().to_uppercase();
+        // Legacy `Intl.NumberFormat(settings.locale, {style: 'currency'})`
+        // grouped with the user's locale; without a stored locale it used
+        // en-US, so the code itself stands in for the symbol.
+        let locale = "en-US";
+        let symbol = if code == "USD" {
+            "$".to_owned()
+        } else {
+            code.clone()
+        };
+        Self {
+            symbol,
+            code,
+            locale: locale.to_owned(),
+        }
+    }
+
+    fn symbol(&self) -> &str {
+        if self.symbol.is_empty() {
+            "$"
+        } else {
+            &self.symbol
+        }
+    }
+
+    /// Thousands separator for the currency's locale (legacy en-GB/en-US
+    /// group with `,`; European locales with `.`).
+    fn thousands(&self) -> char {
+        if self.locale.ends_with("-FR")
+            || self.locale.ends_with("-DE")
+            || self.locale.ends_with("-ES")
+            || self.locale.ends_with("-IT")
+            || self.locale.ends_with("-NL")
+            || self.locale.ends_with("-PT")
+            || self.locale.ends_with("-BE")
+            || self.locale.ends_with("-AT")
+        {
+            '.'
+        } else {
+            ','
+        }
+    }
+
+    fn decimal(&self) -> char {
+        if self.thousands() == '.' { ',' } else { '.' }
+    }
+}
+
+/// Codes offered by the legacy settings page with the symbol and locale the
+/// formatter used for each. `USD` is the identity (no conversion).
+const CURRENCIES: &[(&str, &str, &str)] = &[
+    ("USD", "$", "en-US"),
+    ("EUR", "€", "de-DE"),
+    ("GBP", "£", "en-GB"),
+    ("JPY", "¥", "ja-JP"),
+    ("CNY", "¥", "zh-CN"),
+    ("KRW", "₩", "ko-KR"),
+    ("RUB", "₽", "ru-RU"),
+    ("BRL", "R$", "pt-BR"),
+    ("INR", "₹", "en-IN"),
+    ("AUD", "A$", "en-AU"),
+    ("CAD", "CA$", "en-CA"),
+    ("CHF", "CHF ", "de-CH"),
+    ("SEK", "kr ", "sv-SE"),
+    ("NOK", "kr ", "nb-NO"),
+    ("DKK", "kr ", "da-DK"),
+    ("PLN", "zł ", "pl-PL"),
+    ("TRY", "₺", "tr-TR"),
+    ("UAH", "₴", "uk-UA"),
+    ("MXN", "MX$", "es-MX"),
+    ("NZD", "NZ$", "en-NZ"),
+];
+
+/// Currency codes the settings page lists (legacy `currencyCode`, pruned to
+/// those the bundled rate table covers).
+pub fn currency_codes() -> Vec<&'static str> {
+    CURRENCIES
+        .iter()
+        .map(|(code, ..)| *code)
+        .chain(backup_rates().keys().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Legacy `backup/currency.json` USD→currency rates in [USD, rate] pairs.
+fn backup_rates() -> &'static std::collections::BTreeMap<String, f64> {
+    static RATES: OnceLock<std::collections::BTreeMap<String, f64>> = OnceLock::new();
+    RATES.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Backup {
+            rates: std::collections::BTreeMap<String, f64>,
+        }
+        serde_json::from_str::<Backup>(BACKUP_CURRENCY_JSON)
+            .map(|backup| backup.rates)
+            .unwrap_or_default()
+    })
+}
+
+/// Bundled offline rates (legacy `backup/currency.json`), used whenever a
+/// live rate has not been fetched yet.
+const BACKUP_CURRENCY_JSON: &str =
+    include_str!("../../../legacy/src/main/helpers/classes/steam/backup/currency.json");
+
+/// USD→`code` conversion rate: the live rate when available, otherwise the
+/// bundled backup, otherwise `None` (no conversion; legacy resolved
+/// `undefined` to `NaN` and Chromium formatted it as `$0.00`).
+pub fn rate(code: &str) -> Option<f64> {
+    let code = code.trim().to_uppercase();
+    if code == "USD" {
+        return Some(1.0);
+    }
+    backup_rates().get(&code).copied()
+}
+
+/// Converts a USD amount into `currency` and formats it with the currency's
+/// symbol, grouping, and two decimals.
+pub fn format_currency(currency: &Currency, amount: f64, decimals: usize) -> String {
+    let converted = rate(&currency.code)
+        .filter(|rate| rate.is_finite())
+        .map(|rate| amount * rate)
+        .unwrap_or(amount);
+    let negative = converted < 0.0;
+    let rounded = format!("{:.*}", decimals, converted.abs());
+    let (whole, fraction) = rounded
+        .split_once('.')
+        .unwrap_or((&rounded, ""));
     let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
+    let thousands = currency.thousands();
     for (index, digit) in whole.chars().enumerate() {
         if index > 0 && (whole.len() - index) % 3 == 0 {
-            grouped.push(',');
+            grouped.push(thousands);
         }
         grouped.push(digit);
     }
     let sign = if negative { "-" } else { "" };
     if decimals == 0 {
-        format!("{sign}${grouped}")
+        format!("{sign}{}{grouped}", currency.symbol())
     } else {
-        format!("{sign}${grouped}.{fraction}")
+        format!(
+            "{sign}{}{grouped}{}{fraction}",
+            currency.symbol(),
+            currency.decimal()
+        )
     }
 }
 
@@ -323,6 +476,44 @@ mod tests {
             r#"{"steam":{"last_7d":0.0,"last_90d":0.0},"buff163":{"starting_at":{"price":100.0}}}"#,
         );
         assert_eq!(entry.resolve().steam_listing, Some(0.0));
+    }
+
+    #[test]
+    fn format_currency_converts_and_uses_locale_grouping() {
+        let eur = Currency::new("EUR");
+        let text = format_currency(&eur, 1234.5, 2);
+        // en-US grouping, ISO code in place of the symbol.
+        assert!(text.starts_with("EUR"), "{text}");
+        assert!(text.contains("1,173"), "{text}");
+        assert_eq!(
+            format_currency(&Currency::new("USD"), 1234.5, 0),
+            "$1,234"
+        );
+        // The conversion itself tracks the bundled backup rate.
+        let rate = rate("EUR").unwrap();
+        let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+        let expected: String = format!("{:.2}", 1234.5 * rate)
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        assert_eq!(digits, expected, "{text}");
+    }
+
+    #[test]
+    fn unknown_currencies_fall_back_to_code_and_no_conversion() {
+        let unknown = Currency::new("ZZZ");
+        assert_eq!(rate("ZZZ"), None);
+        assert_eq!(format_currency(&unknown, 1.5, 2), "ZZZ1.50");
+        assert_eq!(rate("USD"), Some(1.0));
+    }
+
+    #[test]
+    fn currency_codes_cover_the_settings_list_and_backup_rates() {
+        let codes = currency_codes();
+        for code in ["AUD", "EUR", "JPY", "USD"] {
+            assert!(codes.contains(&code), "{code}");
+        }
+        assert!(codes.len() > 50);
     }
 
     #[test]

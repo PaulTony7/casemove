@@ -31,6 +31,8 @@ struct SectionOut {
     clipboard: Option<String>,
     selectable: bool,
     move_selected: bool,
+    export: bool,
+    refresh_prices: bool,
 }
 
 /// Optional table columns; the item id stays hidden until asked for.
@@ -174,6 +176,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
     if let Some(text) = out.clipboard {
         ui.ctx().copy_text(text);
+    }
+    if out.export {
+        app.export_csv();
     }
     if app.view.page != app.saved_page {
         app.saved_page = app.view.page;
@@ -398,20 +403,26 @@ fn items_section(
         Section::Storage => &app.storage_grouped,
     };
     let prices_busy = app.prices_busy;
+    let currency = app.currency.clone();
+    let can_export = app.inventory.is_some() || app.storage_aggregate.is_some();
     let hint = match section {
         Section::Inventory => "Search inventory",
         Section::Storage => "Search contents",
     };
 
-    let mut refresh_prices = false;
     toolbar(
         ui,
         view,
         majors,
-        prices_busy,
-        hint,
-        shortcuts,
-        &mut refresh_prices,
+        Toolbar {
+            buttons: ToolbarButtons {
+                prices_busy,
+                can_export,
+            },
+            hint,
+            shortcuts,
+        },
+        out,
     );
     active_chips(ui, view);
 
@@ -445,8 +456,14 @@ fn items_section(
             .map(|row| row.representative.price.unwrap_or(0.0) * row.combined_qty as f64)
             .sum();
         let value_label = match section {
-            Section::Inventory => format!("Inventory value: {}", pricing::format_usd(value)),
-            Section::Storage => format!("Contents value: {}", pricing::format_usd(value)),
+            Section::Inventory => format!(
+                "Inventory value: {}",
+                pricing::format_currency(&currency, value, 2)
+            ),
+            Section::Storage => format!(
+                "Contents value: {}",
+                pricing::format_currency(&currency, value, 2)
+            ),
         };
 
         // Anchor the footer to the bottom and give the table only the space
@@ -481,6 +498,7 @@ fn items_section(
                     &selectable,
                     TableActions {
                         out,
+                        currency: &currency,
                         withdraw_busy: app.withdraw_busy.clone(),
                         show: section == Section::Inventory,
                         storage: section == Section::Storage,
@@ -500,20 +518,36 @@ fn items_section(
     if clear {
         clear_filters(view);
     }
-    if refresh_prices {
+    if out.refresh_prices {
         app.refresh_live_prices(true);
     }
+}
+
+/// Which toolbar buttons are enabled.
+struct ToolbarButtons {
+    prices_busy: bool,
+    can_export: bool,
+}
+
+/// Everything the toolbar needs besides the view it mutates.
+struct Toolbar<'a> {
+    buttons: ToolbarButtons,
+    hint: &'a str,
+    shortcuts: &'a Shortcuts,
 }
 
 fn toolbar(
     ui: &mut egui::Ui,
     view: &mut InventoryViewState,
     majors: &[String],
-    prices_busy: bool,
-    hint: &str,
-    shortcuts: &Shortcuts,
-    refresh_prices: &mut bool,
+    toolbar: Toolbar<'_>,
+    out: &mut SectionOut,
 ) {
+    let Toolbar {
+        buttons,
+        hint,
+        shortcuts,
+    } = toolbar;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
@@ -587,7 +621,7 @@ fn toolbar(
             }
         });
 
-        let prices_text = if prices_busy {
+        let prices_text = if buttons.prices_busy {
             "Updating prices…"
         } else {
             "Refresh prices"
@@ -599,8 +633,25 @@ fn toolbar(
             ))
             .size(12.0),
         );
-        if ui.add_enabled(!prices_busy, prices_button).clicked() {
-            *refresh_prices = true;
+        if ui
+            .add_enabled(!buttons.prices_busy, prices_button)
+            .clicked()
+        {
+            out.refresh_prices = true;
+        }
+        let export = egui::Button::new(
+            egui::RichText::new(format!(
+                "{}  Export CSV",
+                egui_phosphor::regular::DOWNLOAD_SIMPLE
+            ))
+            .size(12.0),
+        );
+        if ui
+            .add_enabled(buttons.can_export, export)
+            .on_hover_text("Writes casemove.csv to your Downloads folder")
+            .clicked()
+        {
+            out.export = true;
         }
     });
     ui.add_space(6.0);
@@ -975,6 +1026,7 @@ fn column_visible(def: &ColumnDef, columns: &Columns, show_actions: bool) -> boo
 
 struct TableActions<'a> {
     out: &'a mut SectionOut,
+    currency: &'a pricing::Currency,
     withdraw_busy: Option<String>,
     show: bool,
     storage: bool,
@@ -994,6 +1046,7 @@ fn table(
 ) {
     let TableActions {
         out,
+        currency,
         withdraw_busy,
         show,
         storage,
@@ -1174,15 +1227,19 @@ fn table(
                             // only for stacks with a non-zero price.
                             ui.vertical(|ui| {
                                 ui.label(
-                                    egui::RichText::new(pricing::format_usd(
+                                    egui::RichText::new(pricing::format_currency(
+                                        currency,
                                         price * display_qty as f64,
+                                        2,
                                     ))
                                     .size(11.0),
                                 );
                                 if display_qty > 1 && price != 0.0 {
                                     ui.label(
-                                        egui::RichText::new(pricing::format_usd(price))
-                                            .size(10.0)
+                                        egui::RichText::new(pricing::format_currency(
+                                            currency, price, 2,
+                                        ))
+                                        .size(10.0)
                                             .color(theme::MUTED),
                                     );
                                 }
