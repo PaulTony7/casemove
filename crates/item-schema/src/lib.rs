@@ -74,12 +74,12 @@ impl ItemSchema {
     pub fn bundled() -> Result<Self, serde_json::Error> {
         Self::from_json_with_collections(
             include_str!(
-                "../../../legacy/src/main/helpers/classes/steam/items/itemsBackupFiles/items_game.json"
+                "../../../data/items_game.json"
             ),
             include_str!(
-                "../../../legacy/src/main/helpers/classes/steam/items/itemsBackupFiles/csgo_english.json"
+                "../../../data/csgo_english.json"
             ),
-            include_str!("../../../legacy/src/main/helpers/classes/steam/backup/collections.json"),
+            include_str!("../../../data/collections.json"),
         )
     }
 
@@ -256,7 +256,7 @@ impl ItemSchema {
             collections: HashMap::new(),
         };
         let collections = serde_json::from_str(include_str!(
-            "../../../legacy/src/main/helpers/classes/steam/backup/collections.json"
+            "../../../data/collections.json"
         ))
         .map_err(|error| format!("Could not parse bundled collections: {error}"))?;
         item_schema.add_collections(collections);

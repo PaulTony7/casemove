@@ -7,10 +7,10 @@ pub use live::{live_key, parse_priceoverview, LiveCache, PriceOverview, MAX_AGE_
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// Bundled price snapshot (legacy `backup/prices.json`): ~23k entries keyed
+/// Bundled price snapshot (`data/prices.json`, the legacy `backup` copy): ~23k entries keyed
 /// by `"Name (Wear)"` or the bare name, all values in USD.
 const PRICES_JSON: &str =
-    include_str!("../../../legacy/src/main/helpers/classes/steam/backup/prices.json");
+    include_str!("../../../data/prices.json");
 
 /// Price sources, named like legacy `settings.source.title` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,7 +315,7 @@ pub fn currency_codes() -> Vec<&'static str> {
         .collect()
 }
 
-/// Legacy `backup/currency.json` USD→currency rates in [USD, rate] pairs.
+/// Legacy USD→currency rates in [USD, rate] pairs.
 fn backup_rates() -> &'static std::collections::BTreeMap<String, f64> {
     static RATES: OnceLock<std::collections::BTreeMap<String, f64>> = OnceLock::new();
     RATES.get_or_init(|| {
@@ -329,10 +329,10 @@ fn backup_rates() -> &'static std::collections::BTreeMap<String, f64> {
     })
 }
 
-/// Bundled offline rates (legacy `backup/currency.json`), used whenever a
+/// Bundled offline rates (`data/currency.json`), used whenever a
 /// live rate has not been fetched yet.
 const BACKUP_CURRENCY_JSON: &str =
-    include_str!("../../../legacy/src/main/helpers/classes/steam/backup/currency.json");
+    include_str!("../../../data/currency.json");
 
 /// USD→`code` conversion rate: the live rate when available, otherwise the
 /// bundled backup, otherwise `None` (no conversion; legacy resolved

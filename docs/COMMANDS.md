@@ -66,7 +66,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `tradeup_possible_outcomes(items) -> Outcomes` | `getTradeUpPossible` + `-reply` | `domain::outcomes` over the bundled `backup/collections.json`: rarity skip, wear bucket, float, and hit-share percentage; outcomes are priced in-process | ◐ |
+| `tradeup_possible_outcomes(items) -> Outcomes` | `getTradeUpPossible` + `-reply` | `domain::outcomes` over the bundled `data/collections.json`: rarity skip, wear bucket, float, and hit-share percentage; outcomes are priced in-process | ◐ |
 | `tradeup_process(ids, rarity)` | `processTradeOrder` | Hand-ported craft payload (rarity key + ten LE u64 ids) sent as the raw `Craft` GC message; the GC reports the result through inventory changes | ◐ |
 | `open_container(ids)` | `openContainer` | `Language.UnlockCrate` payload (zero prefix + LE u64 ids) after ownership/key-validity/tradehold checks; fire-and-forget, the unlocked item arrives as an inventory change | ◐ |
 
@@ -75,7 +75,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
 | `pricing_request(items)` | `getPrice` | Bundled snapshot overlaid by the live Steam Market cache (24h TTL), priced in-process; no request/reply event | ◐ |
-| `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | Display currency + USD→currency rate resolved in-process from the bundled `backup/currency.json` snapshot (`pricing::rate`); no live rate fetch | ◐ |
+| `currency_rate() -> { currency, rate }` | `getCurrency` + `-reply` | Display currency + USD→currency rate resolved in-process from the bundled `data/currency.json` snapshot (`pricing::rate`); no live rate fetch | ◐ |
 | `settings_get(key) -> Value` | `electron-store-get` + `-reply+randomKey` | Non-secret values only (currency, toggles); credentials stay in the keyring | ◐ |
 | `settings_set(key, value)` | `electron-store-set` | Persisted through `settings`; legacy's random reply key is not needed | ◐ |
 | `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name/Steam-avatar metadata only; no secrets returned | ◐ |

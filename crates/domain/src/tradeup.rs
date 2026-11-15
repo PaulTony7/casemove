@@ -1,13 +1,13 @@
 //! Trade-up contract math, ported from legacy `tradeup.tsx` over the bundled
-//! `backup/collections.json` snapshot: eligibility, possible outcomes, wear
+//! `data/collections.json` snapshot: eligibility, possible outcomes, wear
 //! buckets, probabilities, and resulting floats.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-/// Bundled collection snapshot (legacy `backup/collections.json`).
+/// Bundled collection snapshot (`data/collections.json`).
 const COLLECTIONS_JSON: &str =
-    include_str!("../../../legacy/src/main/helpers/classes/steam/backup/collections.json");
+    include_str!("../../../data/collections.json");
 
 /// Wear bucket upper bounds in legacy `rarityLevels` order, followed by
 /// `Battle-Scarred` (legacy's fallthrough, which is never filtered by chance
