@@ -184,7 +184,8 @@ fn table(
         .collect();
 
     let width = ui.available_width();
-    let height = ui.available_height().max(160.0);
+    // The header sits outside the scroll area, so subtract it too.
+    let height = (ui.available_height() - theme::HEADER_HEIGHT).max(160.0);
     let builder = egui_extras::TableBuilder::new(ui)
         .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))

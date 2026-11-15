@@ -942,8 +942,11 @@ fn table(
 
     let width = ui.available_width();
     let total_frac: f32 = defs.iter().map(|def| def.frac).sum();
-    // Leave room for the footer row (spacing + page controls) below the table.
-    let table_height = (ui.available_height() - 40.0).max(200.0);
+    // `max_scroll_height` only constrains the body; the header and footer
+    // are outside it, so reserve both or the pagination row slides under the
+    // bottom status bar.
+    let table_height =
+        (ui.available_height() - theme::HEADER_HEIGHT - 26.0).max(160.0);
 
     let mut builder = egui_extras::TableBuilder::new(ui)
         .striped(true)
