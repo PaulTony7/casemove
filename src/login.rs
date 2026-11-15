@@ -68,7 +68,6 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         app.overview_open = false;
         app.storage_open = false;
         app.trade_up_open = false;
-        app.save_view("inventory");
     }
     ui.add_space(8.0);
     let sign_out = egui::Button::new(format!(

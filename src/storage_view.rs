@@ -64,7 +64,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             app.inventory_open = true;
             app.overview_open = false;
             app.storage_open = false;
-            app.save_view("inventory");
         }
     }
     if let Some((id, name)) = rename {

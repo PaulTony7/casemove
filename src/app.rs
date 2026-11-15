@@ -255,15 +255,10 @@ impl CasemoveApp {
             .store_get::<f32>("ui.sidebar")
             .unwrap_or(216.0)
             .clamp(184.0, 320.0);
+        // Like legacy `/` → `/stats`: a session starts on the dashboard and
+        // no session shows the sign-in page.
         let (inventory_open, overview_open, storage_open, settings_open, trade_up_open) =
-            match core.store_get::<String>("ui.view").as_deref() {
-                Some("inventory") => (true, false, false, false, false),
-                Some("overview") => (false, true, false, false, false),
-                Some("storage") => (false, false, true, false, false),
-                Some("settings") => (false, false, false, true, false),
-                Some("tradeup") => (false, false, false, false, true),
-                _ => (false, false, false, false, false),
-            };
+            (false, true, false, false, false);
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
         let currency_code = core
             .store_get::<String>("pricing.currency")
@@ -1206,13 +1201,6 @@ impl CasemoveApp {
             Ok(()) => format!("Saved {}", path.display()),
             Err(error) => format!("Could not save the report: {error}"),
         };
-    }
-
-    /// Persists which page was last open (`overview` / `inventory`).
-    pub fn save_view(&self, value: &'static str) {        let core = self.core.clone();
-        drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("ui.view", value);
-        }));
     }
 
     /// Persists the visible table columns so they survive a restart.
@@ -2369,7 +2357,6 @@ impl CasemoveApp {
                 self.storage_open = key == "storage";
                 self.settings_open = key == "settings";
                 self.trade_up_open = key == "tradeup";
-                self.save_view(key);
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {
