@@ -330,7 +330,9 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
 }
 
 fn cards(ui: &mut egui::Ui, data: &OverviewData) {
-    let width = ((ui.available_width() - 24.0) / 3.0).max(160.0);
+    // Equal content widths: the row fits three frames, their 12px side
+    // margins, and the two 10px gaps.
+    let width = ((ui.available_width() - 92.0) / 3.0).max(140.0);
     let entries: [(&str, &str, f64, usize); 3] = [
         (
             egui_phosphor::regular::DATABASE,
@@ -351,7 +353,7 @@ fn cards(ui: &mut egui::Ui, data: &OverviewData) {
             data.inventory_items,
         ),
     ];
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, title, value, items) in entries {
             egui::Frame::NONE
@@ -359,7 +361,8 @@ fn cards(ui: &mut egui::Ui, data: &OverviewData) {
                 .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
-                    ui.set_min_width(width);
+                    ui.set_width(width);
+                    ui.set_min_height(56.0);
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(icon).size(18.0).color(theme::MUTED),

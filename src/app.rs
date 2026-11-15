@@ -249,6 +249,11 @@ impl CasemoveApp {
                     Err(error) => self.login_error = error,
                 }
                 self.loading = false;
+                // Connecting is the normal path: load the inventory as soon
+                // as a session exists instead of waiting for a button.
+                if self.profile.is_some() {
+                    self.refresh_inventory();
+                }
             }
             Message::SchemaRefresh(result) => match result {
                 Ok(report) => {
@@ -776,6 +781,9 @@ impl CasemoveApp {
         self.qr_error.clear();
         self.wallet = value.wallet.clone();
         self.profile = Some(value);
+        // The app always wants a connected inventory, so start loading it
+        // right after sign-in rather than asking for another click.
+        self.refresh_inventory();
         let core = self.core.clone();
         let reply = self.reply.clone();
         self.rt.spawn(async move {
