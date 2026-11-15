@@ -981,6 +981,52 @@ mod tests {
     }
 
     #[test]
+    fn agents_get_their_name_team_and_category_from_the_schema() {
+        let schema = ItemSchema::bundled().unwrap();
+        let mut agent = item();
+        agent.definition_index = 4613;
+        agent.attributes.clear();
+        let converted = enrich_item(agent, &schema);
+        assert_eq!(converted.name, "Bloody Darryl The Strapped | The Professionals");
+        assert_eq!(converted.category.as_deref(), Some("Agents"));
+        assert!(
+            converted
+                .image_path
+                .as_deref()
+                .is_some_and(|path| path.contains("econ/characters/")),
+            "agent image path: {:?}",
+            converted.image_path
+        );
+
+        let mut seal = item();
+        seal.definition_index = 4619;
+        seal.attributes.clear();
+        assert_eq!(
+            enrich_item(seal, &schema).name,
+            "'Blueberries' Buckshot | NSWC SEAL"
+        );
+    }
+
+    #[test]
+    fn agents_use_definition_catalog_images_from_the_live_catalog() {
+        let mut schema = ItemSchema::bundled().unwrap();
+        let added = schema
+            .add_image_catalog(
+                item_schema::ImageCatalogKind::Definitions,
+                r#"[{"def_index":"4613","image":"https://community.akamai.steamstatic.com/econ/characters/customplayer_tm_professional_varf5.png"}]"#,
+            )
+            .unwrap();
+        assert_eq!(added, 1);
+        let mut agent = item();
+        agent.definition_index = 4613;
+        agent.attributes.clear();
+        assert_eq!(
+            enrich_item(agent, &schema).image_url.as_deref(),
+            Some("https://community.steamstatic.com/econ/characters/customplayer_tm_professional_varf5.png")
+        );
+    }
+
+    #[test]
     fn enriches_applied_stickers_collection_and_trade_up_metadata() {
         let schema = ItemSchema::from_json_with_collections(
             r##"{
