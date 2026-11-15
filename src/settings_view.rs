@@ -10,15 +10,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut steam_login = app.show_steam_login;
     let mut dev_mode = app.dev_mode;
 
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: theme::PAGE_MARGIN,
-            right: theme::PAGE_MARGIN,
-            top: 14,
-            bottom: 10,
-        })
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new("Settings").size(theme::TITLE_SIZE).strong());
+    theme::page().show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Settings")
+                    .size(theme::HEADING_SIZE)
+                    .color(theme::TEXT_STRONG),
+            );
             ui.label(
                 egui::RichText::new("Application and pricing preferences")
                     .size(theme::MUTED_SIZE)

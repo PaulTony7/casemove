@@ -22,13 +22,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut open: Option<(String, String)> = None;
     let mut rename: Option<(String, String)> = None;
 
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: theme::PAGE_MARGIN,
-            right: theme::PAGE_MARGIN,
-            top: 14,
-            bottom: 10,
-        })
+    theme::page()
         .show(ui, |ui| {
             let rows = unit_rows(app);
             header(ui, app, &rows, &mut load);
@@ -52,7 +46,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 
             search(ui, app);
             ui.add_space(6.0);
-            table(ui, app, &rows, &mut open, &mut rename);
+            theme::card().show(ui, |ui| table(ui, app, &rows, &mut open, &mut rename));
         });
 
     if load {
@@ -118,7 +112,11 @@ fn unit_rows(app: &CasemoveApp) -> Vec<UnitRow> {
 fn header(ui: &mut egui::Ui, app: &CasemoveApp, rows: &[UnitRow], load: &mut bool) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Storage units").size(theme::TITLE_SIZE));
+            ui.label(
+                egui::RichText::new("Storage units")
+                    .size(theme::HEADING_SIZE)
+                    .color(theme::TEXT_STRONG),
+            );
             let items: usize = rows.iter().map(|row| row.count).sum();
             let all_loaded = !rows.is_empty() && rows.iter().all(|row| row.loaded);
             let value: f64 = rows.iter().map(|row| row.value).sum();
@@ -190,8 +188,14 @@ fn table(
     let width = ui.available_width();
     // The header sits outside the scroll area, so subtract it too.
     let height = (ui.available_height() - theme::HEADER_HEIGHT).max(160.0);
+    let header_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), theme::HEADER_HEIGHT),
+    );
+    let painter = ui.painter().clone();
+    // Wider gaps between columns, so each one reads as its own block.
+    ui.spacing_mut().item_spacing.x = theme::COLUMN_GAP;
     let builder = egui_extras::TableBuilder::new(ui)
-        .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .id_salt("storage-units-table")
         .max_scroll_height(height)
@@ -206,36 +210,43 @@ fn table(
                 header.col(|ui| {
                     ui.label(
                         egui::RichText::new(label)
-                            .size(11.0)
+                            .size(theme::MUTED_SIZE)
                             .color(theme::MUTED),
                     );
                 });
             }
         })
         .body(|body| {
+            let mut header_drawn = false;
             body.rows(theme::ROW_HEIGHT, visible.len(), |mut row| {
                 let unit = visible[row.index()];
                 row.col(|ui| identity(ui, &mut app.images, unit));
                 row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} / {}",
-                            unit.count, STORAGE_CAPACITY
-                        ))
-                        .size(theme::BODY_SIZE),
-                    );
+                    crate::inventory_view::cell(ui, |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / {}",
+                                    unit.count, STORAGE_CAPACITY
+                                ))
+                                .size(theme::BODY_SIZE),
+                            );
+                        });
+                    });
                 });
                 row.col(|ui| {
-                    let text = if unit.loaded {
-                        app.money(unit.value)
-                    } else {
-                        "-".into()
-                    };
-                    ui.label(
-                        egui::RichText::new(text)
-                            .size(theme::BODY_SIZE)
-                            .color(if unit.loaded { theme::GREEN } else { theme::MUTED }),
-                    );
+                    crate::inventory_view::cell(ui, |ui| {
+                        let text = if unit.loaded {
+                            app.money(unit.value)
+                        } else {
+                            "-".into()
+                        };
+                        ui.label(
+                            egui::RichText::new(text)
+                                .size(theme::BODY_SIZE)
+                                .color(if unit.loaded { theme::GREEN } else { theme::MUTED }),
+                        );
+                    });
                 });
                 row.col(|ui| {
                     if ui.button("Open").clicked() {
@@ -248,6 +259,20 @@ fn table(
                         *rename = Some((unit.id.clone(), unit.name.clone()));
                     }
                 });
+                let rect = row.response().rect;
+                if !header_drawn {
+                    header_drawn = true;
+                    painter.hline(
+                        header_rect.x_range(),
+                        rect.top(),
+                        egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                    );
+                }
+                painter.hline(
+                    header_rect.x_range(),
+                    rect.bottom(),
+                    egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                );
             });
         });
 }
@@ -258,20 +283,16 @@ fn identity(ui: &mut egui::Ui, images: &mut ImageCache, unit: &UnitRow) {
             ui,
             images,
             unit.image_url.as_deref().filter(|url| !url.is_empty()),
-            egui::vec2(30.0, 30.0),
-            egui::CornerRadius::same(4),
+            egui::vec2(52.0, 40.0),
+            egui::CornerRadius::same(3),
             egui_phosphor::regular::VAULT,
-            16.0,
+            18.0,
             theme::ICON,
         );
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(&unit.name).size(theme::BODY_SIZE));
-            ui.label(
-                egui::RichText::new(&unit.id)
-                    .monospace()
-                    .size(10.0)
-                    .color(theme::MUTED),
-            );
-        });
+        ui.label(
+            egui::RichText::new(&unit.name)
+                .size(theme::BODY_SIZE)
+                .color(theme::TEXT_STRONG),
+        );
     });
 }

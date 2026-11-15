@@ -55,14 +55,7 @@ fn collections(rows: &[domain::CandidateItem]) -> Vec<String> {
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut submit = false;
 
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: theme::PAGE_MARGIN,
-            right: theme::PAGE_MARGIN,
-            top: 14,
-            bottom: 10,
-        })
-        .show(ui, |ui| {
+    theme::page().show(ui, |ui| {
             let rows = app.trade_up.candidates.clone();
             header(ui, app, &mut submit);
             ui.add_space(8.0);
@@ -77,18 +70,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             ui.add_space(6.0);
 
             let sidebar = 330.0;
-            let picker_width = (ui.available_width() - sidebar - 12.0).max(320.0);
+            let picker_width = (ui.available_width() - sidebar - 24.0).max(320.0);
             ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 ui.allocate_ui_with_layout(
                     egui::vec2(picker_width, ui.available_height()),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| picker(ui, app, &rows),
+                    |ui| theme::card().show(ui, |ui| picker(ui, app, &rows)),
                 );
-                ui.separator();
                 ui.allocate_ui_with_layout(
                     egui::vec2(sidebar, ui.available_height()),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| sidebar_panel(ui, app),
+                    |ui| theme::card().show(ui, |ui| sidebar_panel(ui, app)),
                 );
             });
         });
@@ -101,7 +94,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, submit: &mut bool) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Trade up contracts").size(theme::TITLE_SIZE));
+            ui.label(
+                egui::RichText::new("Trade up contracts")
+                    .size(theme::HEADING_SIZE)
+                    .color(theme::TEXT_STRONG),
+            );
             let count = app.trade_up.contract.items.len();
             ui.label(
                 egui::RichText::new(format!(
@@ -199,17 +196,29 @@ fn filters(ui: &mut egui::Ui, app: &mut CasemoveApp, rows: &[domain::CandidateIt
             });
 
         ui.label(
-            egui::RichText::new(format!("{:.2} min", app.trade_up.min_float))
+            egui::RichText::new("Float")
                 .size(theme::MUTED_SIZE)
                 .color(theme::MUTED),
         );
-        ui.add(egui::Slider::new(&mut app.trade_up.min_float, 0.0..=1.0).show_value(false));
+        ui.add(
+            egui::DragValue::new(&mut app.trade_up.min_float)
+                .speed(0.001)
+                .range(0.0..=1.0)
+                .max_decimals(9),
+        )
+        .on_hover_text("Minimum float");
         ui.label(
-            egui::RichText::new(format!("{:.2} max", app.trade_up.max_float))
+            egui::RichText::new("to")
                 .size(theme::MUTED_SIZE)
                 .color(theme::MUTED),
         );
-        ui.add(egui::Slider::new(&mut app.trade_up.max_float, 0.0..=1.0).show_value(false));
+        ui.add(
+            egui::DragValue::new(&mut app.trade_up.max_float)
+                .speed(0.001)
+                .range(0.0..=1.0)
+                .max_decimals(9),
+        )
+        .on_hover_text("Maximum float");
         // Legacy only let min rise below max and max fall above min.
         if app.trade_up.min_float > app.trade_up.max_float {
             app.trade_up.min_float = app.trade_up.max_float;
@@ -275,8 +284,14 @@ fn picker(ui: &mut egui::Ui, app: &mut CasemoveApp, rows: &[domain::CandidateIte
     let width = ui.available_width();
     let height = (ui.available_height() - theme::HEADER_HEIGHT).max(160.0);
     let mut clicked: Option<domain::CandidateItem> = None;
-    egui_extras::TableBuilder::new(ui)
-        .striped(true)
+    let header_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), theme::HEADER_HEIGHT),
+    );
+    let painter = ui.painter().clone();
+    // Wider gaps between columns, so each one reads as its own block.
+    ui.spacing_mut().item_spacing.x = theme::COLUMN_GAP;
+    let table = egui_extras::TableBuilder::new(ui)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .id_salt("trade-up-picker")
         .max_scroll_height(height)
@@ -288,50 +303,62 @@ fn picker(ui: &mut egui::Ui, app: &mut CasemoveApp, rows: &[domain::CandidateIte
         .header(theme::HEADER_HEIGHT, |mut header| {
             for label in ["Product", "Collection", "Price", "Float", ""] {
                 header.col(|ui| {
-                    ui.label(egui::RichText::new(label).size(11.0).color(theme::MUTED));
+                    ui.label(egui::RichText::new(label).size(theme::MUTED_SIZE).color(theme::MUTED));
                 });
             }
-        })
-        .body(|body| {
-            body.rows(theme::ROW_HEIGHT, visible.len(), |mut row| {
+        });
+    table.body(|body| {
+        let mut header_drawn = false;
+        body.rows(theme::ROW_HEIGHT, visible.len(), |mut row| {
+            {
                 let candidate = visible[row.index()];
                 row.col(|ui| {
-                    product_cell(
-                        ui,
-                        &mut app.images,
-                        candidate,
-                        custom_names.get(&candidate.id).map(String::as_str),
-                    )
+                    crate::inventory_view::cell(ui, |ui| {
+                        product_cell(
+                            ui,
+                            &mut app.images,
+                            candidate,
+                            custom_names.get(&candidate.id).map(String::as_str),
+                        );
+                    });
                 });
                 row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(&candidate.collection)
+                    crate::inventory_view::cell(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(&candidate.collection)
+                                .size(theme::MUTED_SIZE)
+                                .color(theme::MUTED),
+                        );
+                    });
+                });
+                row.col(|ui| {
+                    crate::inventory_view::cell(ui, |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    candidate
+                                        .price
+                                        .map(|price| app.money(price))
+                                        .unwrap_or_else(|| "-".to_owned()),
+                                )
+                                .size(theme::BODY_SIZE),
+                            );
+                        });
+                    });
+                });
+                row.col(|ui| {
+                    crate::inventory_view::cell(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                candidate
+                                    .wear
+                                    .map(|wear| format!("{wear:.6}"))
+                                    .unwrap_or_else(|| "-".to_owned()),
+                            )
                             .size(theme::MUTED_SIZE)
                             .color(theme::MUTED),
-                    );
-                });
-                row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            candidate
-                                .price
-                                .map(|price| app.money(price))
-                                .unwrap_or_else(|| "-".to_owned()),
-                        )
-                        .size(theme::BODY_SIZE),
-                    );
-                });
-                row.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            candidate
-                                .wear
-                                .map(|wear| format!("{wear:.6}"))
-                                .unwrap_or_else(|| "-".to_owned()),
-                        )
-                        .size(theme::MUTED_SIZE)
-                        .color(theme::MUTED),
-                    );
+                        );
+                    });
                 });
                 row.col(|ui| {
                     let full = app.trade_up.contract.is_full();
@@ -350,8 +377,23 @@ fn picker(ui: &mut egui::Ui, app: &mut CasemoveApp, rows: &[domain::CandidateIte
                         clicked = Some(candidate.clone());
                     }
                 });
-            });
+                let rect = row.response().rect;
+                if !header_drawn {
+                    header_drawn = true;
+                    painter.hline(
+                        header_rect.x_range(),
+                        rect.top(),
+                        egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                    );
+                }
+                painter.hline(
+                    header_rect.x_range(),
+                    rect.bottom(),
+                    egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                );
+            }
         });
+    });
     if let Some(candidate) = clicked {
         let custom_name = custom_names.get(&candidate.id).cloned();
         app.add_trade_up_candidate(candidate, custom_name);
@@ -377,10 +419,10 @@ fn product_cell(
             ui,
             images,
             candidate.image_url.as_deref(),
-            egui::vec2(32.0, 24.0),
+            egui::vec2(52.0, 40.0),
             egui::CornerRadius::same(3),
             egui_phosphor::regular::CUBE,
-            14.0,
+            18.0,
             theme::ICON,
         );
         ui.vertical(|ui| {
@@ -529,18 +571,20 @@ fn outcome_row(ui: &mut egui::Ui, images: &mut ImageCache, outcome: &Outcome, co
     let price = trade_up_outcome_price(outcome).unwrap_or(0.0);
     let profit = if cost > 0.0 { price / cost * 100.0 } else { 0.0 };
     egui::Frame::NONE
-        .fill(theme::RAISED)
-        .inner_margin(egui::Margin::symmetric(8, 6))
+        .fill(theme::CARD)
+        .corner_radius(6)
+        .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 images::media_box(
                     ui,
                     images,
                     outcome.image_url.as_deref(),
-                    egui::vec2(38.0, 28.0),
+                    egui::vec2(52.0, 40.0),
                     egui::CornerRadius::same(3),
                     egui_phosphor::regular::CUBE,
-                    14.0,
+                    18.0,
                     theme::ICON,
                 );
                 ui.vertical(|ui| {

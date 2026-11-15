@@ -1,7 +1,7 @@
 //! Inventory and storage-unit contents: one command bar, a filter popover,
-//! a sortable table with a pinned header and footer, and "load more"
-//! batching. Both datasets share the same chrome so the storage view is just
-//! the inventory view over a different list.
+//! a sortable table with a pinned header and footer, and a pager. Both
+//! datasets share the same chrome so the storage view is just the inventory
+//! view over a different list.
 
 use crate::app::CasemoveApp;
 use crate::images;
@@ -11,8 +11,8 @@ use app_commands::InventoryItem;
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-/// Rows rendered in the first batch and added by each "Load more".
-pub const BATCH: usize = 100;
+/// Rows per page; the pager steps through these.
+pub const PAGE_SIZE: usize = 50;
 
 /// Which dataset a section renders: the loaded inventory or the open storage
 /// unit's contents.
@@ -184,8 +184,8 @@ pub struct InventoryViewState {
     pub sort: SortKey,
     pub sort_desc: bool,
     pub units_only: bool,
-    /// How many filtered rows are rendered; grows by `BATCH` on "Load more".
-    pub limit: usize,
+    /// Zero-based page shown in the pager.
+    pub page: usize,
     pub selected_categories: HashSet<String>,
     pub selected_rarities: HashSet<String>,
     pub selected_majors: HashSet<String>,
@@ -204,7 +204,7 @@ impl InventoryViewState {
             sort,
             sort_desc,
             units_only: false,
-            limit: BATCH,
+            page: 0,
             selected_categories: HashSet::new(),
             selected_rarities: HashSet::new(),
             selected_majors: HashSet::new(),
@@ -215,9 +215,9 @@ impl InventoryViewState {
         }
     }
 
-    /// Back to the first batch whenever the result set changes.
-    fn reset_batch(&mut self) {
-        self.limit = BATCH;
+    /// Back to the first page whenever the result set changes.
+    fn reset_page(&mut self) {
+        self.page = 0;
     }
 }
 
@@ -263,13 +263,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             && !egui::Popup::is_any_open(ui.ctx()),
     };
 
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: theme::PAGE_MARGIN,
-            right: theme::PAGE_MARGIN,
-            top: 12,
-            bottom: 8,
-        })
+    theme::page()
         .show(ui, |ui| {
             let page = Page {
                 shortcuts: &shortcuts,
@@ -503,10 +497,10 @@ fn storage_section(ui: &mut egui::Ui, app: &mut CasemoveApp, page: Page<'_>, bac
         export: page.export,
         column_edits: page.column_edits,
     };
-    let limit_before = app.storage_view.limit;
+    let page_before = app.storage_view.page;
     items_section(ui, app, Section::Storage, uses);
-    if app.storage_view.limit != limit_before {
-        app.save_limited();
+    if app.storage_view.page != page_before {
+        app.save_storage_page();
     }
 }
 
@@ -561,8 +555,6 @@ fn filtered_value(app: &CasemoveApp, grouped: &[GroupedItem], view: &InventoryVi
 }
 
 /// Command bar, active-filter chips, table, and footer for one dataset.
-/// Returns whether the storage table's batch size changed and should be
-/// persisted.
 fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, uses: SectionUses<'_>) {
     let SectionUses {
         shortcuts,
@@ -628,28 +620,40 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
         return;
     }
 
-    let shown = total.min(view.limit);
+    let pages = total.div_ceil(PAGE_SIZE).max(1);
+    view.page = view.page.min(pages - 1);
+    let start = view.page * PAGE_SIZE;
+    let end = (start + PAGE_SIZE).min(total);
     let selectable = section == Section::Inventory;
-
-    // The footer owns a fixed band at the bottom; the table gets the rest and
-    // pins its own header, so neither can swallow the other's clicks.
-    let available = ui.available_rect_before_wrap();
-    let footer_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            available.left(),
-            (available.bottom() - FOOTER_HEIGHT).max(available.top()),
-        ),
-        available.max,
-    );
-    let table_rect = egui::Rect::from_min_max(
-        available.min,
-        egui::pos2(available.right(), footer_rect.top()),
-    );
 
     let withdraw_busy = app.withdraw_busy.clone();
     let rt = app.rt.handle().clone();
-    let load_more = {
-        let mut footer = FooterState::default();
+    let mut footer = FooterState::default();
+    theme::card().show(ui, |ui| {
+        card_header(
+            ui,
+            CardHeader { total },
+        );
+
+        let available = ui.available_rect_before_wrap();
+        // The pager's buttons grow with the UI zoom, so the band is measured
+        // from the pager's own size instead of a fixed height.
+        let footer_height = (FOOTER_HEIGHT.max(PAGER_BUTTON * ui.ctx().zoom_factor() + 16.0))
+            .min(available.height());
+        // A gap keeps the table's last row and hairline clear of the footer.
+        let footer_top = (available.bottom() - footer_height).max(available.top());
+        let footer_rect = egui::Rect::from_min_max(
+            egui::pos2(available.left(), footer_top),
+            available.max,
+        );
+        let table_rect = egui::Rect::from_min_max(
+            available.min,
+            egui::pos2(
+                available.right(),
+                (footer_top - TABLE_GAP).max(available.top()),
+            ),
+        );
+
         let context = TableContext {
             out,
             currency: &app.currency,
@@ -657,11 +661,13 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
             section,
             selectable,
         };
+        let page_rows = &rows[start..end];
         ui.scope_builder(egui::UiBuilder::new().max_rect(table_rect), |ui| {
-            for row in &rows[..shown] {
+            for row in page_rows {
                 prefetch_thumbnail(ui, &rt, &row.representative);
             }
-            let interactive = table(ui, view, &rows[..shown], context, &mut footer);
+            let interactive =
+                table(ui, view, page_rows, context, &mut footer, table_rect.height());
             if let Some(index) = footer.clicked_row {
                 apply_row_click(view, &interactive, index);
             }
@@ -672,25 +678,54 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
                 view,
                 out,
                 Footer {
-                    shown,
                     total,
-                    selectable: std::mem::take(&mut footer.selected_pairs),
+                    page: view.page,
+                    pages,
+                    all_rows: rows
+                        .iter()
+                        .filter(|row| selectable_row(&row.representative))
+                        .map(|row| (row.representative.id.clone(), row.combined_qty))
+                        .collect(),
                     labels: std::mem::take(&mut footer.labels),
                 },
-                &mut footer,
-            )
+            );
         });
-        footer.load_more
-    };
-    if load_more {
-        view.limit = (view.limit + BATCH).min(total);
-    }
+    });
+}
+
+/// The card's title row: the result count, like "21472 orders".
+#[derive(Clone, Copy)]
+struct CardHeader {
+    total: usize,
+}
+
+fn card_header(ui: &mut egui::Ui, header: CardHeader) {
+    let CardHeader { total } = header;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let count = format!(
+            "{total} {}",
+            if total == 1 { "item" } else { "items" }
+        );
+        ui.label(
+            egui::RichText::new(count)
+                .size(theme::HEADING_SIZE)
+                .color(theme::TEXT_STRONG),
+        );
+    });
+    ui.add_space(14.0);
 }
 
 /// Rows paint whatever thumbnails are already cached; fetching happens once
 /// per URL through the app's worker thread.
 fn prefetch_thumbnail(ui: &egui::Ui, rt: &tokio::runtime::Handle, item: &InventoryItem) {
-    if let Some(url) = item.image_url.as_deref().filter(|url| !url.is_empty()) {
+    let urls = std::iter::once(item.image_url.as_deref().filter(|url| !url.is_empty())).chain(
+        item.stickers
+            .iter()
+            .take(4)
+            .map(|sticker| sticker.image_url.as_deref()),
+    );
+    for url in urls.flatten() {
         images::prefetch(rt, ui.ctx(), url);
     }
 }
@@ -767,14 +802,15 @@ fn command_bar(
         let search = ui.add(
             egui::TextEdit::singleline(&mut view.query)
                 .hint_text(hint)
-                .desired_width(300.0)
-                .margin(egui::vec2(8.0, 4.0)),
+                .desired_width(340.0)
+                .margin(egui::vec2(10.0, 6.0))
+                .background_color(theme::CARD),
         );
         if shortcuts.focus_search {
             search.request_focus();
         }
         if search.changed() {
-            view.reset_batch();
+            view.reset_page();
         }
         if shortcuts.escape {
             if search.has_focus() {
@@ -802,7 +838,10 @@ fn command_bar(
             .on_hover_text("Category, rarity, majors, and item properties");
         let _ = egui::Popup::menu(&filters)
             .id(egui::Id::new(("items-filters", table_id.store_key())))
-            .show(|ui| filter_panel(ui, view, majors));
+            .show(|ui| {
+                ui.set_width(FILTER_WIDTH);
+                filter_panel(ui, view, majors);
+            });
 
         let columns = ui
             .add(
@@ -881,89 +920,118 @@ fn command_bar(
 }
 
 fn filter_panel(ui: &mut egui::Ui, view: &mut InventoryViewState, majors: &[String]) {
-    ui.set_min_width(340.0);
-    ui.set_max_width(460.0);
     ui.horizontal(|ui| {
-        filter_label(ui, "FILTERS");
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            egui::RichText::new(format!("{}  Filters", egui_phosphor::regular::FUNNEL))
+                .size(theme::BODY_SIZE)
+                .color(theme::TEXT_STRONG),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let clear = egui::Button::new(
-                egui::RichText::new(format!(
-                    "{}  Clear all",
-                    egui_phosphor::regular::FUNNEL_SIMPLE_X
-                ))
-                .size(11.0),
-            );
-            if ui.add_enabled(has_active_filters(view), clear).clicked() {
+            if ui
+                .add_enabled(
+                    has_active_filters(view),
+                    egui::Button::new(
+                        egui::RichText::new(format!(
+                            "{}  Clear all",
+                            egui_phosphor::regular::FUNNEL_SIMPLE_X
+                        ))
+                        .size(theme::MUTED_SIZE),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
                 clear_filters(view);
             }
         });
     });
+    ui.add_space(6.0);
+    ui.separator();
     ui.add_space(4.0);
 
-    let units: Vec<(&str, bool)> = vec![("Storage units only", view.units_only)];
-    chip_group(ui, view, "SHOW", units, |view, _| {
-        view.units_only = !view.units_only;
-    });
+    // The groups can outgrow a tall window; the panel scrolls rather than
+    // stretching past the screen.
+    egui::ScrollArea::vertical()
+        .id_salt("filters-body")
+        .max_height(FILTER_MAX_HEIGHT)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            filter_group(ui, "Show");
+            ui.checkbox(&mut view.units_only, "Storage units only");
 
-    let categories: Vec<(&str, bool)> = domain::CATEGORIES
-        .iter()
-        .map(|(_, name)| (*name, view.selected_categories.contains(*name)))
-        .collect();
-    chip_group(ui, view, "CATEGORY", categories, |view, text| {
-        inventory::toggle_filter(&mut view.selected_categories, text.to_owned());
-    });
+            filter_group(ui, "Category");
+            let categories: Vec<(&str, bool)> = domain::CATEGORIES
+                .iter()
+                .map(|(_, name)| (*name, view.selected_categories.contains(*name)))
+                .collect();
+            chip_group(ui, view, categories, |view, text| {
+                inventory::toggle_filter(&mut view.selected_categories, text.to_owned());
+            });
 
-    let rarities: Vec<(&str, bool)> = (1..=7u32)
-        .map(|rarity| {
-            let name = inventory::rarity_name(rarity);
-            (name, view.selected_rarities.contains(name))
-        })
-        .collect();
-    chip_group(ui, view, "RARITY", rarities, |view, text| {
-        inventory::toggle_filter(&mut view.selected_rarities, text.to_owned());
-    });
+            filter_group(ui, "Rarity");
+            let rarities: Vec<(&str, bool)> = (1..=7u32)
+                .map(|rarity| {
+                    let name = inventory::rarity_name(rarity);
+                    (name, view.selected_rarities.contains(name))
+                })
+                .collect();
+            chip_group(ui, view, rarities, |view, text| {
+                inventory::toggle_filter(&mut view.selected_rarities, text.to_owned());
+            });
 
-    if !majors.is_empty() {
-        let list: Vec<(&str, bool)> = majors
-            .iter()
-            .map(|major| (major.as_str(), view.selected_majors.contains(major)))
+            if !majors.is_empty() {
+                filter_group(ui, "Majors");
+                let list: Vec<(&str, bool)> = majors
+                    .iter()
+                    .map(|major| (major.as_str(), view.selected_majors.contains(major)))
+                    .collect();
+                chip_group(ui, view, list, |view, text| {
+                    inventory::toggle_filter(&mut view.selected_majors, text.to_owned());
+                });
+            }
+
+            filter_group(ui, "Properties");
+            let properties: Vec<(&str, bool)> = [
+                "Tradehold",
+                "Nametag",
+                "Moveable",
+                "Equipped CT",
+                "Equipped T",
+                "Key",
+            ]
+            .into_iter()
+            .map(|property| (property, view.selected_properties.contains(property)))
             .collect();
-        chip_group(ui, view, "MAJORS", list, |view, text| {
-            inventory::toggle_filter(&mut view.selected_majors, text.to_owned());
+            chip_group(ui, view, properties, |view, text| {
+                inventory::toggle_filter(&mut view.selected_properties, text.to_owned());
+            });
         });
-    }
+}
 
-    let properties: Vec<(&str, bool)> = [
-        "Tradehold",
-        "Nametag",
-        "Moveable",
-        "Equipped CT",
-        "Equipped T",
-        "Key",
-    ]
-    .into_iter()
-    .map(|property| (property, view.selected_properties.contains(property)))
-    .collect();
-    chip_group(ui, view, "PROPERTIES", properties, |view, text| {
-        inventory::toggle_filter(&mut view.selected_properties, text.to_owned());
-    });
+/// A section heading, nudged away from whatever ran before it.
+fn filter_group(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(title)
+            .size(theme::MUTED_SIZE)
+            .color(theme::MUTED),
+    );
+    ui.add_space(3.0);
 }
 
 fn chip_group(
     ui: &mut egui::Ui,
     view: &mut InventoryViewState,
-    title: &str,
     items: Vec<(&str, bool)>,
     toggle: fn(&mut InventoryViewState, &str),
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.spacing_mut().item_spacing.y = 6.0;
-        filter_label(ui, title);
+        ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
         for (text, selected) in items {
             if chip(ui, selected, text) {
                 toggle(view, text);
-                view.reset_batch();
+                view.reset_page();
             }
         }
     });
@@ -1058,7 +1126,7 @@ fn active_chips(ui: &mut egui::Ui, view: &mut InventoryViewState) {
         }
     });
     if cleared_any {
-        view.reset_batch();
+        view.reset_page();
     }
     ui.add_space(4.0);
 }
@@ -1073,36 +1141,30 @@ fn filter_label(ui: &mut egui::Ui, text: &str) {
 }
 
 fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> bool {
-    let frame = egui::Frame::NONE
-        .corner_radius(99)
-        .fill(if selected {
-            theme::CHIP_ACTIVE
-        } else {
-            egui::Color32::TRANSPARENT
-        })
-        .stroke(egui::Stroke::new(
-            1.0_f32,
-            if selected {
+    // A Button lays itself out to exactly the text's size; a Frame around a
+    // Label stretches to whatever row height the parent layout hands it.
+    let text = egui::RichText::new(text)
+        .size(theme::MUTED_SIZE)
+        .color(if selected { egui::Color32::WHITE } else { theme::TEXT });
+    ui.add(
+        egui::Button::new(text)
+            .corner_radius(99)
+            .min_size(egui::vec2(0.0, 0.0))
+            .fill(if selected {
                 theme::CHIP_ACTIVE
             } else {
-                theme::BORDER
-            },
-        ))
-        .inner_margin(egui::Margin::symmetric(8, 1));
-    let color = if selected {
-        egui::Color32::WHITE
-    } else {
-        theme::TEXT
-    };
-    frame
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(egui::RichText::new(text).size(11.0).color(color))
-                    .sense(egui::Sense::click()),
-            )
-            .clicked()
-        })
-        .inner
+                egui::Color32::TRANSPARENT
+            })
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                if selected {
+                    theme::CHIP_ACTIVE
+                } else {
+                    theme::BORDER
+                },
+            )),
+    )
+    .clicked()
 }
 
 fn active_filter_count(view: &InventoryViewState) -> usize {
@@ -1124,7 +1186,7 @@ fn clear_filters(view: &mut InventoryViewState) {
     view.selected_rarities.clear();
     view.selected_majors.clear();
     view.selected_properties.clear();
-    view.reset_batch();
+    view.reset_page();
 }
 
 /// The rows the table shows: the current filters applied to the grouped
@@ -1165,11 +1227,8 @@ fn apply_sort(view: &mut InventoryViewState, key: SortKey) {
         // Numeric columns are most useful biggest-first.
         view.sort_desc = matches!(key, SortKey::Price | SortKey::Quantity | SortKey::Float);
     }
-    view.reset_batch();
+    view.reset_page();
 }
-
-
-
 
 pub(crate) fn empty_state(ui: &mut egui::Ui, title: &str, action: Option<(&str, &str)>) -> bool {
     let mut clicked = false;
@@ -1242,7 +1301,7 @@ fn loading(ui: &mut egui::Ui, text: &str) {
 }
 
 fn primary_button(text: String) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE)).fill(theme::ACCENT)
+    egui::Button::new(egui::RichText::new(text).color(theme::CARD)).fill(theme::ACCENT)
 }
 
 /// A square icon-only button; `disabled` greys it out without consuming it.
@@ -1265,14 +1324,23 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, disabled: bool, hover: &str) -> e
 
 // --- table -----------------------------------------------------------------
 
-const FOOTER_HEIGHT: f32 = 32.0;
+const FOOTER_HEIGHT: f32 = 44.0;
+/// The pager's page buttons; the footer band grows with the zoom to hold them.
+const PAGER_BUTTON: f32 = 28.0;
+/// Breathing room between the table's last row and the footer bar.
+const TABLE_GAP: f32 = 12.0;
 /// The item column never shrinks below this, whatever else is visible.
 const MIN_ITEM_WIDTH: f32 = 220.0;
-/// Rows are a little tighter than a card; 44 keeps two text lines comfortable.
-const ROW_HEIGHT: f32 = 44.0;
-const THUMBNAIL: egui::Vec2 = egui::vec2(52.0, 39.0);
+/// Base width of the free-growing text columns (wear, category).
+const TEXT_COLUMN_WIDTH: f32 = 130.0;
+/// The filter popover's fixed width and scrolling body cap.
+const FILTER_WIDTH: f32 = 420.0;
+const FILTER_MAX_HEIGHT: f32 = 460.0;
+const THUMBNAIL: egui::Vec2 = egui::vec2(52.0, 40.0);
+/// Sticker swatches, sized to sit inside a row without growing it.
+const STICKER_THUMBNAIL: egui::Vec2 = egui::vec2(16.0, 20.0);
 
-/// A column's identity; `Item` and `Actions` are always on.
+/// A column's identity; `Select`, `Item` and `Actions` are always on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cell {
     Item,
@@ -1332,23 +1400,17 @@ impl Cell {
         }
     }
 
-    /// Numeric columns read right-aligned, like any table of money and counts.
-    fn numeric(self) -> bool {
-        matches!(self, Self::Qty | Self::Price)
-    }
-
     /// The column's comfortable width; `Item` claims what the others leave.
     fn fixed_width(self) -> f32 {
         match self {
-            Self::Rarity => 96.0,
-            Self::Wear => 84.0,
-            Self::Qty => 44.0,
-            Self::Price => 100.0,
-            Self::Stickers => 64.0,
-            Self::Seed => 60.0,
-            Self::Tradehold => 78.0,
-            Self::Category => 104.0,
-            Self::Id => 120.0,
+            Self::Wear | Self::Category => TEXT_COLUMN_WIDTH,
+            Self::Rarity => 72.0,
+            Self::Qty => 40.0,
+            Self::Price => 92.0,
+            Self::Stickers => 56.0,
+            Self::Seed => 52.0,
+            Self::Tradehold => 72.0,
+            Self::Id => 112.0,
             Self::Actions => 26.0,
             Self::Item => 0.0,
         }
@@ -1357,22 +1419,22 @@ impl Cell {
     fn width(self, spare: f32) -> egui_extras::Column {
         match self {
             Self::Item => egui_extras::Column::remainder().at_least(200.0),
+            // Fixed columns size to their content so none spills right when
+            // the window narrows.
             Self::Actions => egui_extras::Column::exact(self.fixed_width()),
             _ => egui_extras::Column::initial(self.fixed_width() + spare * self.stretch())
-                .at_least(self.fixed_width() * 0.8)
-                .resizable(true),
+                .clip(true),
         }
     }
 
-    /// How spare width is shared out; text-like columns grow, numeric ones do
-    /// not.
+    /// How spare width is shared out: the text columns spread across the
+    /// row, rarity and float take only what they need, numbers stay fixed.
     fn stretch(self) -> f32 {
         match self {
-            Self::Category => 0.4,
+            Self::Category => 0.5,
             Self::Stickers => 0.2,
-            Self::Rarity | Self::Tradehold => 0.15,
-            Self::Wear | Self::Seed | Self::Id => 0.05,
-            Self::Qty | Self::Price => 0.0,
+            Self::Seed | Self::Tradehold | Self::Id => 0.15,
+            Self::Rarity | Self::Wear | Self::Qty | Self::Price => 0.0,
             Self::Item | Self::Actions => 0.0,
         }
     }
@@ -1399,9 +1461,6 @@ struct InteractiveRow {
 #[derive(Default)]
 struct FooterState {
     clicked_row: Option<usize>,
-    load_more: bool,
-    /// Selectable `(id, quantity)` rows in the shown batch, for "Select shown".
-    selected_pairs: Vec<(String, usize)>,
     /// `(id, name)` of every shown row, for the selection summary.
     labels: Vec<(String, String)>,
 }
@@ -1412,14 +1471,9 @@ fn table(
     rows: &[&GroupedItem],
     context: TableContext<'_>,
     footer: &mut FooterState,
+    height: f32,
 ) -> Vec<InteractiveRow> {
-    let TableContext {
-        out,
-        currency,
-        withdraw_busy,
-        section,
-        selectable,
-    } = context;
+    let section = context.section;
 
     let mut columns = vec![Cell::Item];
     for column in ColumnId::ALL {
@@ -1433,27 +1487,120 @@ fn table(
     // are dropped, and the rest share what is left.
     let width = ui.available_width();
     fit_columns(&mut columns, width);
-    let used: f32 = columns.iter().map(|cell| cell.fixed_width()).sum();
-    let spare = (width - used).max(0.0);
+    let gaps = theme::COLUMN_GAP * (columns.len().saturating_sub(1) as f32);
+    let fixed: f32 = columns
+        .iter()
+        .filter(|cell| **cell != Cell::Item)
+        .map(|cell| cell.fixed_width())
+        .sum();
+    // Narrow columns give way first; if even the minimums overflow, the whole
+    // table scrolls sideways rather than spilling past the card.
+    let spare = (width - gaps - fixed).max(0.0);
+    let content_width = if spare > 0.0 {
+        width
+    } else {
+        gaps + fixed + MIN_ITEM_WIDTH
+    };
 
-    let mut interactive = Vec::with_capacity(rows.len());
-    let shift = ui.input(|input| input.modifiers.shift);
+    // Wider gaps between columns, so each one reads as its own block.
+    ui.spacing_mut().item_spacing.x = theme::COLUMN_GAP;
+    let sorted_desc = view.sort_desc;
+
+    // Columns that do not fit at their minimums scroll sideways instead of
+    // squeezing the item column into nothing. The band height is the caller's,
+    // so the table can never grow into the footer.
+    // Scroll bars take their own strip here, so they never cover a row. The
+    // horizontal strip is reserved up front: egui only learns it is needed
+    // after laying the content out, which would leave the last row hidden.
+    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+    let overflow = content_width > width;
+    let reserved = if overflow {
+        ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin
+    } else {
+        0.0
+    };
+    let scroll = egui::ScrollArea::both()
+        .id_salt(("items-scroll", section_salt(section)))
+        .auto_shrink([false, false])
+        .max_height(height - reserved);
+    let scroll = if content_width > width {
+        scroll.min_scrolled_width(width)
+    } else {
+        scroll
+    };
+    // The inner content is only as tall as the band minus the reserved
+    // horizontal bar, so the table body shrinks to match instead of
+    // re-filling the full band and hiding its last row under the bar.
+    let inner_height = height - reserved;
+    let mut output = Vec::new();
+    scroll.show_viewport(ui, |ui, _| {
+        let inner =
+            egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(content_width, inner_height));
+        output = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                table_body(
+                    ui,
+                    view,
+                    rows,
+                    context,
+                    footer,
+                    columns,
+                    sorted_desc,
+                )
+            })
+            .inner;
+    });
+    output
+}
+
+/// Lays out the header and rows inside an already-sized `ui`.
+#[allow(clippy::too_many_arguments)]
+fn table_body(
+    ui: &mut egui::Ui,
+    view: &mut InventoryViewState,
+    rows: &[&GroupedItem],
+    context: TableContext<'_>,
+    footer: &mut FooterState,
+    columns: Vec<Cell>,
+    sorted_desc: bool,
+) -> Vec<InteractiveRow> {
+    let TableContext {
+        out,
+        currency,
+        withdraw_busy,
+        section,
+        selectable,
+    } = context;
+    // The inner `ui` is sized to the content, so `remainder` and the spare
+    // share resolve against it rather than the viewport.
+    let width = ui.available_width();
+    let fixed: f32 = columns
+        .iter()
+        .filter(|cell| **cell != Cell::Item)
+        .map(|cell| cell.fixed_width())
+        .sum();
+    let spare = (width - theme::COLUMN_GAP * (columns.len().saturating_sub(1) as f32) - fixed)
+        .max(0.0);
     let _ = withdraw_busy;
-    // Leave the horizontal scrollbar its strip so the last row stays clickable.
-    let height = (ui.available_height() - theme::HEADER_HEIGHT - 12.0).max(120.0);
+    let mut interactive: Vec<InteractiveRow> = Vec::with_capacity(rows.len());
+    let shift = ui.input(|input| input.modifiers.shift);
+    let header_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), theme::HEADER_HEIGHT),
+    );
+    let painter = ui.painter().clone();
     let mut table_builder = egui_extras::TableBuilder::new(ui)
         .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .id_salt(("items-table", section_salt(section)))
-        .resizable(true)
-        .auto_shrink([false, false])
-        .min_scrolled_height(height)
-        .max_scroll_height(height);
+        // The surrounding scroll area owns vertical movement, so the table
+        // lays every row out at its own height and nothing scrolls twice.
+        .vscroll(false)
+        .auto_shrink([false, false]);
     for cell in &columns {
         table_builder = table_builder.column(cell.width(spare));
     }
 
-    let sorted_desc = view.sort_desc;
     let mut sort_click: Option<SortKey> = None;
     let table_builder = table_builder.header(theme::HEADER_HEIGHT, |mut header| {
         for cell in &columns {
@@ -1462,15 +1609,8 @@ fn table(
                 if *cell == Cell::Actions {
                     return;
                 }
-                if cell.numeric() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        sort_caret(ui, active, sorted_desc);
-                        header_label(ui, *cell, active);
-                    });
-                } else {
-                    header_label(ui, *cell, active);
-                    sort_caret(ui, active, sorted_desc);
-                }
+                header_label(ui, *cell, active);
+                sort_caret(ui, active, sorted_desc);
             });
             if let Some(key) = cell.sort() {
                 if response.hovered() {
@@ -1489,14 +1629,17 @@ fn table(
     }
 
     table_builder.body(|body| {
-        body.rows(ROW_HEIGHT, rows.len(), |mut row| {
+        // A hairline under the header, as in the trade-up picker. It is drawn
+        // from the first row once its cells exist (a row's response is only
+        // valid after a `col`), which also covers an empty table.
+        let mut header_drawn = false;
+        body.rows(theme::ROW_HEIGHT, rows.len(), |mut row| {
             let index = row.index();
             let grouped = rows[index];
             let item = &grouped.representative;
             let qty = grouped.combined_qty;
             let selected = selectable && view.selected.contains_key(&item.id);
 
-            row.set_selected(selected);
             let mut clicked = false;
 
             for cell in &columns {
@@ -1512,6 +1655,33 @@ fn table(
             }
 
             let response = row.response();
+            if !header_drawn {
+                header_drawn = true;
+                painter.hline(
+                    header_rect.x_range(),
+                    response.rect.top(),
+                    egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                );
+            }
+            // A hairline closes every row, as on the reference table.
+            painter.hline(
+                header_rect.x_range(),
+                response.rect.bottom(),
+                egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+            );
+            if selected {
+                // A vertical accent bar down the row's left edge marks it as
+                // selected, inset so it reads as part of the row, not a border.
+                let rect = response.rect;
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.left(), rect.top() + 6.0),
+                        egui::pos2(rect.left() + 3.0, rect.bottom() - 6.0),
+                    ),
+                    egui::CornerRadius::same(2),
+                    theme::CHIP_ACTIVE,
+                );
+            }
             if response.hovered() {
                 response
                     .ctx
@@ -1519,9 +1689,6 @@ fn table(
             }
             let _ = response.context_menu(|ui| row_menu(ui, item, out, section));
 
-            if selectable && selectable_row(item) {
-                footer.selected_pairs.push((item.id.clone(), qty));
-            }
             footer.labels.push((item.id.clone(), item.name.clone()));
             interactive.push(InteractiveRow {
                 id: item.id.clone(),
@@ -1534,9 +1701,11 @@ fn table(
     interactive
 }
 
-/// Drops optional columns, widest first, until the item column has at least
-/// `MIN_ITEM_WIDTH`; `Actions` always stays last.
+/// Drops optional columns until the item column has at least
+/// `MIN_ITEM_WIDTH`; the broad text columns go first, then the widest of the
+/// rest, and `Select`/`Actions` always stay.
 fn fit_columns(columns: &mut Vec<Cell>, width: f32) {
+    let pinned = |cell: &Cell| matches!(cell, Cell::Item | Cell::Actions);
     while columns.len() > 2 {
         let fixed: f32 = columns
             .iter()
@@ -1549,8 +1718,13 @@ fn fit_columns(columns: &mut Vec<Cell>, width: f32) {
         let widest = columns
             .iter()
             .enumerate()
-            .filter(|(_, cell)| !matches!(cell, Cell::Item | Cell::Actions))
-            .max_by(|(_, left), (_, right)| left.fixed_width().total_cmp(&right.fixed_width()))
+            .filter(|(_, cell)| !pinned(cell))
+            .max_by(|(_, left), (_, right)| {
+                let broad = |cell: &&Cell| matches!(cell, Cell::Wear | Cell::Category);
+                broad(left)
+                    .cmp(&broad(right))
+                    .then_with(|| left.fixed_width().total_cmp(&right.fixed_width()))
+            })
             .map(|(index, _)| index);
         match widest {
             Some(index) => {
@@ -1585,150 +1759,174 @@ fn sort_caret(ui: &mut egui::Ui, active: bool, descending: bool) {
     } else {
         egui_phosphor::regular::CARET_UP
     };
-    ui.label(egui::RichText::new(caret).size(10.0).color(theme::ACCENT));
+    ui.label(
+        egui::RichText::new(caret)
+            .size(theme::MUTED_SIZE)
+            .color(theme::TEXT_STRONG),
+    );
 }
 
 fn header_label(ui: &mut egui::Ui, cell: Cell, active: bool) {
     let mut text = egui::RichText::new(cell.label())
-        .size(10.0)
-        .color(if active { theme::TEXT } else { theme::MUTED });
+        .size(theme::MUTED_SIZE)
+        .color(if active { theme::TEXT_STRONG } else { theme::MUTED });
     if active {
         text = text.strong();
     }
     ui.label(text);
 }
 
+/// Cells fill their column, so contents start on the header label's x. `Qty`
+/// is the exception: it is a right-aligned number, matching its header.
+pub(crate) fn cell(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let rect = ui.max_rect();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.set_min_width(rect.width());
+        contents(ui);
+    })
+    .response
+}
+
+
 fn cell_contents(
+    ui: &mut egui::Ui,
+    cell_id: Cell,
+    item: &InventoryItem,
+    qty: usize,
+    currency: &pricing::Currency,
+    storage_button: bool,
+) -> egui::Response {
+    cell(ui, |ui| {
+        fill_cell(ui, cell_id, item, qty, currency, storage_button);
+    })
+}
+
+fn fill_cell(
     ui: &mut egui::Ui,
     cell: Cell,
     item: &InventoryItem,
     qty: usize,
     currency: &pricing::Currency,
     storage_button: bool,
-) -> egui::Response {
+) {
     match cell {
-        Cell::Item => identity(ui, item, qty),
-        Cell::Rarity => ui.label(
-            egui::RichText::new(inventory::rarity_name(item.rarity))
-                .size(theme::MUTED_SIZE)
-                .color(theme::rarity_color(item.rarity)),
-        ),
+        Cell::Item => {
+            identity(ui, item, qty);
+        }
+        Cell::Rarity => {
+            ui.label(
+                egui::RichText::new(inventory::rarity_name(item.rarity))
+                    .size(theme::MUTED_SIZE)
+                    .color(theme::rarity_color(item.rarity)),
+            );
+        }
         Cell::Wear => {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(item.wear_name.as_deref().unwrap_or("—"))
-                        .size(theme::MUTED_SIZE),
-                );
-                if let Some(wear) = item.wear {
-                    ui.label(
-                        egui::RichText::new(format!("{wear:.6}"))
-                            .size(10.0)
-                            .color(theme::MUTED)
-                            .monospace(),
-                    );
-                }
-            })
-            .response
+            ui.label(
+                egui::RichText::new(item.wear_name.as_deref().unwrap_or("—"))
+                    .size(theme::BODY_SIZE),
+            );
         }
         Cell::Qty => {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(qty.to_string()).size(theme::MUTED_SIZE))
-            })
-            .inner
+                ui.label(egui::RichText::new(qty.to_string()).size(theme::BODY_SIZE));
+            });
         }
-        Cell::Price => {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                match item.price {
-                    Some(price) => ui
-                        .vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(pricing::format_currency(
-                                    currency,
-                                    price * qty as f64,
-                                    2,
-                                ))
-                                .size(theme::MUTED_SIZE),
-                            );
-                            if qty > 1 && price != 0.0 {
-                                ui.label(
-                                    egui::RichText::new(pricing::format_currency(
-                                        currency, price, 2,
-                                    ))
-                                    .size(10.0)
-                                    .color(theme::MUTED),
-                                );
-                            }
-                        })
-                        .response,
-                    None => muted(ui, "—"),
-                }
-            })
-            .inner
-        }
+        Cell::Price => match item.price {
+            Some(price) => {
+                ui.label(
+                    egui::RichText::new(pricing::format_currency(
+                        currency,
+                        price * qty as f64,
+                        2,
+                    ))
+                    .size(theme::BODY_SIZE),
+                );
+            }
+            None => {
+                muted(ui, "—");
+            }
+        },
         Cell::Stickers => {
             if item.stickers.is_empty() {
-                muted(ui, "—")
+                muted(ui, "—");
             } else {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}×{}",
-                        egui_phosphor::regular::SEAL,
-                        item.stickers.len()
-                    ))
-                    .size(theme::MUTED_SIZE)
-                    .color(theme::TEXT),
-                )
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for sticker in item.stickers.iter().take(4) {
+                        sticker_thumbnail(ui, sticker.image_url.as_deref());
+                    }
+                    if item.stickers.len() > 4 {
+                        ui.label(
+                            egui::RichText::new(format!("+{}", item.stickers.len() - 4))
+                                .size(10.0)
+                                .color(theme::MUTED),
+                        );
+                    }
+                })
+                .response
                 .on_hover_text(
                     item.stickers
                         .iter()
                         .map(|sticker| format!("{} · {}", sticker.name, sticker.kind))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                )
+                );
             }
         }
         Cell::Seed => match item.paint_seed {
-            Some(seed) => ui.label(
-                egui::RichText::new(seed.to_string())
-                    .size(theme::MUTED_SIZE)
-                    .color(theme::MUTED),
-            ),
-            None => muted(ui, "—"),
-        },
-        Cell::Tradehold => match tradehold_days(item) {
-            Some(days) => ui.label(
-                egui::RichText::new(format!("{days}d"))
-                    .size(theme::MUTED_SIZE)
-                    .color(theme::GREEN),
-            ),
-            None => muted(ui, "Tradable"),
-        },
-        Cell::Category => match item.category.as_deref() {
-            Some(category) => ui.add(
-                egui::Label::new(
-                    egui::RichText::new(category)
+            Some(seed) => {
+                ui.label(
+                    egui::RichText::new(seed.to_string())
                         .size(theme::MUTED_SIZE)
                         .color(theme::MUTED),
-                )
-                .truncate(),
-            ),
-            None => muted(ui, "—"),
+                );
+            }
+            None => {
+                muted(ui, "—");
+            }
         },
-        Cell::Id => ui.label(
-            egui::RichText::new(&item.id)
-                .monospace()
-                .size(10.0)
-                .color(theme::MUTED),
-        ),
+        Cell::Tradehold => match tradehold_days(item) {
+            Some(days) => {
+                ui.label(
+                    egui::RichText::new(format!("{days}d"))
+                        .size(theme::MUTED_SIZE)
+                        .color(theme::GREEN),
+                );
+            }
+            None => {
+                muted(ui, "Tradable");
+            }
+        },
+        Cell::Category => match item.category.as_deref() {
+            Some(category) => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(category)
+                            .size(theme::MUTED_SIZE)
+                            .color(theme::MUTED),
+                    )
+                    .truncate(),
+                );
+            }
+            None => {
+                muted(ui, "—");
+            }
+        },
+        Cell::Id => {
+            ui.label(
+                egui::RichText::new(&item.id)
+                    .monospace()
+                    .size(10.0)
+                    .color(theme::MUTED),
+            );
+        }
         Cell::Actions => {
             if item.is_storage_unit && storage_button {
                 ui.label(
                     egui::RichText::new(egui_phosphor::regular::CARET_RIGHT)
-                        .size(12.0)
+                        .size(theme::MUTED_SIZE)
                         .color(theme::MUTED),
-                )
-            } else {
-                ui.label("")
+                );
             }
         }
     }
@@ -1742,122 +1940,89 @@ fn muted(ui: &mut egui::Ui, text: &str) -> egui::Response {
     )
 }
 
-/// The item cell: rarity-banded thumbnail, name, and one metadata line.
+/// The item cell, laid out like the reference table: rarity dot, thumbnail,
+/// then the name with its state badges on one line.
 fn identity(ui: &mut egui::Ui, item: &InventoryItem, qty: usize) -> egui::Response {
-    let (rect, _) = ui.allocate_exact_size(THUMBNAIL, egui::Sense::hover());
-    ui.painter().rect_filled(rect, 3, theme::RAISED);
-    if let Some(texture) = item
-        .image_url
-        .as_deref()
-        .filter(|url| !url.is_empty())
-        .and_then(images::cached)
-    {
-        let natural = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
-        let scale = (rect.width() / natural.x)
-            .min(rect.height() / natural.y)
-            .min(1.0);
-        let fitted = natural * scale;
-        egui::Image::new((texture.id(), fitted))
-            .fit_to_exact_size(fitted)
-            .paint_at(ui, egui::Rect::from_center_size(rect.center(), fitted));
-    } else {
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::PACKAGE,
-            egui::FontId::proportional(20.0),
-            egui::Color32::from_rgb(0x6b, 0x72, 0x80),
-        );
-    }
-    // The rarity band under the thumbnail; `Default` items stay unbanded.
-    if item.rarity >= 2 {
-        let band = egui::Rect::from_min_max(
-            egui::pos2(rect.left(), rect.bottom() - 3.0),
-            rect.max,
-        );
-        ui.painter().rect_filled(
-            band,
-            egui::CornerRadius {
-                nw: 0,
-                ne: 0,
-                sw: 3,
-                se: 3,
-            },
-            theme::rarity_color(item.rarity),
-        );
-    }
+    let dot = egui::vec2(7.0, 7.0);
+    let (rect, _) = ui.allocate_exact_size(dot, egui::Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), 3.5, theme::rarity_color(item.rarity));
+    item_thumbnail(ui, item);
 
-    ui.add_space(8.0);
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let mut name = egui::RichText::new(&item.name).size(theme::BODY_SIZE).strong();
-            if item.rarity >= 2 {
-                name = name.color(theme::TEXT);
-            }
-            ui.add(egui::Label::new(name).truncate());
-            if qty > 1 {
-                badge(ui, &format!("×{qty}"), theme::ACCENT);
-            }
-            if item.stat_trak {
-                badge(ui, "StatTrak", theme::BADGE_GOLD);
-            }
-            if item.is_storage_unit {
-                badge(ui, "Unit", theme::BADGE_GOLD);
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let mut meta: Vec<String> = Vec::new();
-            if let Some(custom_name) = &item.custom_name {
-                meta.push(format!("\"{custom_name}\""));
-            }
-            if let Some(wear_name) = &item.wear_name {
-                meta.push(wear_name.clone());
-            }
-            if let Some(collection) = &item.collection {
-                meta.push(collection.clone());
-            }
-            if !item.stickers.is_empty() {
-                meta.push(format!(
-                    "{} sticker{}",
-                    item.stickers.len(),
-                    if item.stickers.len() == 1 { "" } else { "s" }
-                ));
-            }
-            if meta.is_empty() {
-                muted(
-                    ui,
-                    item.category.as_deref().unwrap_or(&item.id),
-                );
-            } else {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(meta.join(" · "))
-                            .size(10.0)
-                            .color(theme::MUTED),
-                    )
-                    .truncate(),
-                );
-            }
-            if let Some(days) = tradehold_days(item) {
-                badge(ui, &format!("{days}d hold"), theme::GREEN);
-            }
-        });
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let name = egui::RichText::new(&item.name)
+            .size(theme::BODY_SIZE)
+            .color(theme::TEXT_STRONG);
+        ui.add(egui::Label::new(name).truncate());
+        if qty > 1 {
+            theme::state_badge(ui, &format!("×{qty}"));
+        }
+        if item.stat_trak {
+            theme::state_badge(ui, "StatTrak");
+        }
+        if item.is_storage_unit {
+            theme::state_badge(ui, "Unit");
+        }
+        if let Some(days) = tradehold_days(item) {
+            theme::mint_badge(ui, &format!("{days}d hold"));
+        }
     })
     .response
 }
 
-/// A small rounded pill of text.
-fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
-    egui::Frame::NONE
-        .fill(color.gamma_multiply(0.16))
-        .corner_radius(3)
-        .inner_margin(egui::Margin::symmetric(4, 0))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(9.5).color(color));
-        });
+/// The item cell's thumbnail: a raised tile with a hairline border, the way
+/// the picker framed its rows.
+fn item_thumbnail(ui: &mut egui::Ui, item: &InventoryItem) {
+    let (rect, _) = ui.allocate_exact_size(THUMBNAIL, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3, theme::RAISED);
+    let url = item.image_url.as_deref();
+    thumbnail(ui, rect, url, egui_phosphor::regular::CUBE, theme::ICON);
+    ui.painter().rect_stroke(
+        rect.expand(0.5),
+        3,
+        egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Paint `url` fitted into `rect`, or `fallback` when no texture is cached.
+fn thumbnail(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    url: Option<&str>,
+    fallback: &str,
+    color: egui::Color32,
+) {
+    let texture = url
+        .filter(|url| !url.is_empty())
+        .and_then(images::cached);
+    match texture {
+        Some(texture) => {
+            let natural = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
+            let scale = (rect.width() / natural.x).min(rect.height() / natural.y);
+            let fitted = natural * scale;
+            egui::Image::new((texture.id(), fitted))
+                .fit_to_exact_size(fitted)
+                .paint_at(ui, egui::Rect::from_center_size(rect.center(), fitted));
+        }
+        None => {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                fallback,
+                egui::FontId::proportional(16.0),
+                color,
+            );
+        }
+    }
+}
+
+/// The sticker cell: one small thumbnail per sticker, then the overflow count.
+fn sticker_thumbnail(ui: &mut egui::Ui, url: Option<&str>) {
+    let (rect, _) = ui.allocate_exact_size(STICKER_THUMBNAIL, egui::Sense::hover());
+    thumbnail(ui, rect, url, egui_phosphor::regular::SEAL, theme::MUTED);
 }
 
 fn tradehold_days(item: &InventoryItem) -> Option<i64> {
@@ -1949,40 +2114,42 @@ fn icon_menu(glyph: &str, text: &str) -> String {
     format!("{glyph}  {text}")
 }
 
-/// The pinned bar under the table: totals, selection, and "load more".
+/// The pinned bar under the table: totals, selection, and the pager.
 struct Footer {
-    shown: usize,
     total: usize,
-    selectable: Vec<(String, usize)>,
+    page: usize,
+    pages: usize,
+    /// Every row the filters allow, across all pages, so "Select all" can
+    /// take the whole result set rather than the page in view.
+    all_rows: Vec<(String, usize)>,
     /// `(row id, item name)` for the shown batch, so the selection strip can
     /// name what is about to move.
     labels: Vec<(String, String)>,
 }
 
-fn footer_bar(
-    ui: &mut egui::Ui,
-    view: &mut InventoryViewState,
-    out: &mut SectionOut,
-    footer: Footer,
-    state: &mut FooterState,
-) {
+fn footer_bar(ui: &mut egui::Ui, view: &mut InventoryViewState, out: &mut SectionOut, footer: Footer) {
     let Footer {
-        shown,
         total,
-        selectable,
+        page,
+        pages,
+        all_rows,
         labels,
     } = footer;
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
 
+    // A hairline separates the pager from the last row, like the reference.
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top(),
+        egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+    );
+
+    ui.horizontal_centered(|ui| {
+        // Left: what is selected, if anything.
         let selected: usize = view.selected.values().sum();
         if selected > 0 {
-            ui.label(
-                egui::RichText::new(format!("{selected} selected"))
-                    .size(theme::MUTED_SIZE)
-                    .strong()
-                    .color(theme::ACCENT),
-            );
+            ui.spacing_mut().item_spacing.x = 6.0;
+            theme::state_badge(ui, &format!("{selected} selected"));
             let names: Vec<&str> = labels
                 .iter()
                 .filter(|(id, _)| view.selected.contains_key(id))
@@ -1999,9 +2166,11 @@ fn footer_bar(
                 muted(ui, &text);
             }
             let move_button = egui::Button::new(egui::RichText::new(format!(
-                "{}  Move selected",
+                "{}  Move",
                 egui_phosphor::regular::UPLOAD_SIMPLE
-            )));
+            )))
+            .fill(theme::CARD)
+            .stroke(egui::Stroke::new(1.0_f32, theme::BORDER));
             if ui.add(move_button).clicked() {
                 out.move_selected = true;
             }
@@ -2009,47 +2178,150 @@ fn footer_bar(
                 view.selected.clear();
                 view.anchor = None;
             }
-            ui.separator();
+        } else {
+            muted(ui, &format!("{} {}", total, if total == 1 { "row" } else { "rows" }));
         }
 
-        muted(ui, &format!("{shown} of {total} shown"));
-        if shown < total {
-            let remaining = total - shown;
-            let button = egui::Button::new(egui::RichText::new(format!(
-                "{}  Load {} more",
-                egui_phosphor::regular::ARROW_DOWN,
-                remaining.min(BATCH)
-            )));
-            if ui.add(button).clicked() {
-                state.load_more = true;
-            }
-        } else if total > BATCH {
-            muted(ui, "end of list");
-        }
+        // Centre: the numbered pager, ‹ 1 2 3 4 … 37 ›.
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 30.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    // A zero-width spacer centres the strip inside the card.
+                    let strip = pager_strip_width(pages);
+                    ui.add_space(((width - strip) / 2.0).max(0.0));
+                    pager(ui, view, page, pages);
+                },
+            );
+        });
 
+        // Right: select every filtered row, not just the page in view.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !selectable.is_empty() {
-                let all = selectable
+            if !all_rows.is_empty() {
+                let all = all_rows
                     .iter()
                     .all(|(id, _)| view.selected.contains_key(id));
-                let label = if all {
-                    "Clear selection"
-                } else {
-                    "Select shown"
-                };
-                if ui.button(label).clicked() {
+                let label = if all { "Clear selection" } else { "Select all" };
+                let button = egui::Button::new(egui::RichText::new(label).size(theme::BODY_SIZE))
+                    .fill(if all { theme::PAGE_ACTIVE } else { theme::CARD });
+                if ui
+                    .add(button)
+                    .on_hover_text(if all {
+                        "Clears the selection"
+                    } else {
+                        "Selects every row the filters allow, across all pages"
+                    })
+                    .clicked()
+                {
                     if all {
                         view.selected.clear();
                         view.anchor = None;
                     } else {
-                        for (id, quantity) in selectable {
-                            view.selected.insert(id, quantity);
+                        // Start from a clean slate so stale ids from earlier
+                        // filters cannot ride along into a move.
+                        view.selected.clear();
+                        for (id, quantity) in &all_rows {
+                            view.selected.insert(id.clone(), *quantity);
                         }
+                        view.anchor = None;
                     }
                 }
             }
         });
     });
+}
+
+/// Approximate strip width so the pager can be centred before it is laid out:
+/// a 26px button, a 6px gap, and page slots of `‹ 1 2 3 4 … 37 ›`.
+fn pager_strip_width(pages: usize) -> f32 {
+    let slots = pages.clamp(2, 7) as f32;
+    slots * 26.0 + (slots - 1.0) * 6.0
+}
+
+fn pager(ui: &mut egui::Ui, view: &mut InventoryViewState, page: usize, pages: usize) {
+    ui.spacing_mut().item_spacing.x = 6.0;
+
+    let mut next_page: Option<usize> = None;
+    let step = |ui: &mut egui::Ui, glyph: &str, enabled: bool| -> bool {
+        let button = egui::Button::new(egui::RichText::new(glyph).size(13.0))
+            .frame(false)
+            .min_size(egui::vec2(26.0, 26.0));
+        ui.add_enabled(enabled, button)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    };
+
+    if step(ui, egui_phosphor::regular::CARET_LEFT, page > 0) {
+        next_page = Some(page.saturating_sub(1));
+    }
+    for slot in page_slots(page, pages) {
+        match slot {
+            Some(index) => {
+                let current = index == page;
+                let button = egui::Button::new(
+                    egui::RichText::new((index + 1).to_string())
+                        .size(12.0)
+                        .color(if current {
+                            theme::TEXT_STRONG
+                        } else {
+                            theme::MUTED
+                        }),
+                )
+                .fill(if current {
+                    theme::PAGE_ACTIVE
+                } else {
+                    egui::Color32::TRANSPARENT
+                })
+                .stroke(if current {
+                    egui::Stroke::NONE
+                } else {
+                    egui::Stroke::new(1.0_f32, theme::SEPARATOR)
+                })
+                .min_size(egui::vec2(28.0, 28.0));
+                if ui.add(button).clicked() && !current {
+                    next_page = Some(index);
+                }
+            }
+            None => {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(26.0, 26.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| muted(ui, "…"),
+                );
+            }
+        }
+    }
+    if step(ui, egui_phosphor::regular::CARET_RIGHT, page + 1 < pages) {
+        next_page = Some((page + 1).min(pages - 1));
+    }
+    if let Some(next) = next_page {
+        view.page = next;
+    }
+}
+
+/// Which page buttons to show: first, last, the current window, and an
+/// ellipsis wherever the strip skips pages.
+fn page_slots(page: usize, pages: usize) -> Vec<Option<usize>> {
+    const WINDOW: usize = 7;
+    if pages <= WINDOW {
+        return (0..pages).map(Some).collect();
+    }
+    // The reference's strip: 1 2 3 4 … 37, sliding with the current page.
+    let first = page.saturating_sub(2).min(pages - 4);
+    let last = first + 3;
+    let mut slots: Vec<Option<usize>> = (first..=last).map(Some).collect();
+    if first > 0 {
+        // Keep the first page reachable when the window has slid away.
+        slots.insert(0, Some(0));
+        slots.insert(1, None);
+    }
+    if last < pages - 1 {
+        slots.push(None);
+        slots.push(Some(pages - 1));
+    }
+    slots
 }
 
 #[cfg(test)]
@@ -2114,6 +2386,65 @@ mod tests {
     }
 
     #[test]
+    fn header_hairline_reads_the_row_response_after_its_cells() {
+        // Regression: reading `TableRow::response` before any `col` panics.
+        let ctx = egui::Context::default();
+        let app = item(1, "★ Karambit | Doppler", 6, Some(0.0123), Some(1200.0));
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let painter = ui.painter().clone();
+                let mut header_rect = None;
+                let table = egui_extras::TableBuilder::new(ui)
+                    .column(egui_extras::Column::remainder())
+                    .header(theme::HEADER_HEIGHT, |mut header| {
+                        header_rect = Some(header.col(|_| {}).0);
+                    })
+                    .body(|body| {
+                        body.rows(theme::ROW_HEIGHT, 1, |mut row| {
+                            row.col(|ui| {
+                                cell_contents(
+                                    ui,
+                                    Cell::Item,
+                                    &app.representative,
+                                    1,
+                                    &pricing::Currency::new("USD"),
+                                    true,
+                                );
+                            });
+                            let top = row.response().rect.top();
+                            if let Some(rect) = header_rect {
+                                painter.hline(
+                                    rect.x_range(),
+                                    top,
+                                    egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+                                );
+                            }
+                        });
+                    });
+                let _ = table;
+            });
+        });
+    }
+
+    #[test]
+    fn wide_content_sets_a_minimum_scroll_width() {
+        // Mirrors the budget `table` uses: if the fixed minimums plus the
+        // item floor exceed the window, the content is laid out wider than
+        // the viewport so the scroll area can pan.
+        let columns = [Cell::Item, Cell::Rarity, Cell::Wear, Cell::Qty];
+        let gaps = theme::COLUMN_GAP * (columns.len() - 1) as f32;
+        let fixed: f32 = columns
+            .iter()
+            .filter(|cell| **cell != Cell::Item)
+            .map(|cell| cell.fixed_width())
+            .sum();
+        let narrow = 300.0;
+        assert!(narrow < gaps + fixed + MIN_ITEM_WIDTH);
+        let content = gaps + fixed + MIN_ITEM_WIDTH;
+        assert!(content > narrow, "content overflows the viewport");
+    }
+
+    #[test]
     fn header_click_sorts_and_toggles_direction() {
         let mut view = InventoryViewState::default();
         apply_sort(&mut view, SortKey::Price);
@@ -2124,7 +2455,7 @@ mod tests {
         apply_sort(&mut view, SortKey::Name);
         assert_eq!(view.sort, SortKey::Name);
         assert!(!view.sort_desc, "text sorts start smallest-first");
-        assert_eq!(view.limit, BATCH);
+        assert_eq!(view.page, 0, "a new sort starts at the first page");
     }
 
     #[test]
@@ -2151,6 +2482,16 @@ mod tests {
         apply_row_click(&mut view, &shifted, 3);
         assert_eq!(view.selected.len(), 4, "0..=3 selected from the anchor");
         assert!(view.selected.contains_key("3"));
+    }
+
+    #[test]
+    fn rarity_and_float_give_up_width_first() {
+        // They used to claim a share of spare width; now they only take what
+        // their content needs so other columns can fit.
+        assert_eq!(Cell::Rarity.stretch(), 0.0);
+        assert_eq!(Cell::Wear.stretch(), 0.0);
+        assert!(Cell::Wear.stretch() < Cell::Category.stretch());
+        assert!(Cell::Rarity.fixed_width() <= 72.0);
     }
 
     #[test]
@@ -2182,12 +2523,63 @@ mod tests {
     }
 
     #[test]
-    fn load_more_grows_the_batch() {
+    fn pager_slots_keep_first_last_and_window() {
+        assert_eq!(page_slots(0, 3), vec![Some(0), Some(1), Some(2)]);
+        let slots = page_slots(6, 12);
+        assert_eq!(slots.first(), Some(&Some(0)));
+        assert_eq!(slots.last(), Some(&Some(11)));
+        assert!(slots.contains(&Some(6)), "the current page is always shown");
+        assert!(slots.iter().any(Option::is_none), "a skip renders an ellipsis");
+        assert!(slots.len() <= 8, "at most four pages plus two ellipses and two ends");
+    }
+
+    #[test]
+    fn pages_of_fifty() {
+        assert_eq!(50usize.div_ceil(PAGE_SIZE), 1);
+        assert_eq!(581usize.div_ceil(PAGE_SIZE), 12);
+        assert_eq!(0usize.div_ceil(PAGE_SIZE).max(1), 1);
+    }
+
+    #[test]
+    fn page_changes_reset_on_new_results() {
+        let mut view = InventoryViewState {
+            page: 5,
+            ..Default::default()
+        };
+        view.reset_page();
+        assert_eq!(view.page, 0);
+    }
+
+    #[test]
+    fn select_all_covers_every_page_not_just_the_visible_one() {
+        // 120 movable rows = 3 pages of 50; the footer's select-all takes the
+        // whole filtered set, and replaces any stale selection from before.
+        let rows: Vec<GroupedItem> = (0..120)
+            .map(|id| item(id, "Prisma 2 Case", 1, None, None))
+            .collect();
+        let filtered: Vec<&GroupedItem> = rows.iter().collect();
+        let all_rows: Vec<(String, usize)> = filtered
+            .iter()
+            .filter(|row| selectable_row(&row.representative))
+            .map(|row| (row.representative.id.clone(), row.combined_qty))
+            .collect();
+        assert_eq!(all_rows.len(), 120, "every filtered row, not PAGE_SIZE");
+        assert!(all_rows.len() > PAGE_SIZE);
+
         let mut view = InventoryViewState::default();
-        assert_eq!(view.limit, BATCH);
-        view.limit = (view.limit + BATCH).min(150);
-        assert_eq!(view.limit, 150, "capped at the result count");
-        view.reset_batch();
-        assert_eq!(view.limit, BATCH);
+        view.selected.insert("stale".to_owned(), 1);
+        view.selected.clear();
+        for (id, quantity) in &all_rows {
+            view.selected.insert(id.clone(), *quantity);
+        }
+        assert_eq!(view.selected.len(), 120);
+        assert!(!view.selected.contains_key("stale"));
+    }
+
+    #[test]
+    fn storage_units_are_not_selectable_through_select_all() {
+        let mut unit = item(9, "Prisma 2 Case", 1, None, None);
+        unit.representative.is_storage_unit = true;
+        assert!(!selectable_row(&unit.representative));
     }
 }

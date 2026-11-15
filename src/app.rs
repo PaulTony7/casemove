@@ -291,10 +291,7 @@ impl CasemoveApp {
                 "tradeup" => (false, false, false, false, true),
                 _ => (false, true, false, false, false),
             };
-        let saved_limit = core
-            .store_get::<usize>("ui.storage.limit")
-            .unwrap_or(inventory_view::BATCH)
-            .max(inventory_view::BATCH);
+        let saved_storage_page = core.store_get::<usize>("ui.storage.page").unwrap_or(0);
         let currency_code = core
             .store_get::<String>("pricing.currency")
             .filter(|code| !code.trim().is_empty())
@@ -391,7 +388,7 @@ impl CasemoveApp {
             },
             storage_view: inventory_view::InventoryViewState {
                 columns: storage_columns,
-                limit: saved_limit,
+                page: saved_storage_page,
                 ..Default::default()
             },
             storage_grouped: Vec::new(),
@@ -1253,12 +1250,12 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists how many storage-contents rows are currently loaded.
-    pub fn save_limited(&self) {
+    /// Persists which page of the storage contents is on screen.
+    pub fn save_storage_page(&self) {
         let core = self.core.clone();
-        let limit = self.storage_view.limit;
+        let page = self.storage_view.page;
         drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("ui.storage.limit", limit);
+            let _ = core.store_set("ui.storage.page", page);
         }));
     }
 
@@ -2095,7 +2092,7 @@ impl CasemoveApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let button = egui::Button::new(
                     egui::RichText::new(if dialog.busy { "Opening..." } else { "Open" })
-                        .color(egui::Color32::WHITE),
+                        .color(theme::CARD),
                 )
                 .fill(theme::ACCENT);
                 if ui
@@ -2314,7 +2311,7 @@ impl CasemoveApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let confirm_button = egui::Button::new(
                     egui::RichText::new(if busy { "Submitting..." } else { "Confirm trade-up" })
-                        .color(egui::Color32::WHITE),
+                        .color(theme::CARD),
                 )
                 .fill(theme::ACCENT);
                 if ui
@@ -2984,7 +2981,14 @@ impl CasemoveApp {
                                 if ui
                                     .add_enabled(
                                         !busy && !full,
-                                        egui::Button::new(label).fill(if full {
+                                        egui::Button::new(
+                                            egui::RichText::new(label).color(if full {
+                                                theme::MUTED
+                                            } else {
+                                                theme::CARD
+                                            }),
+                                        )
+                                        .fill(if full {
                                             theme::RAISED
                                         } else {
                                             theme::ACCENT
@@ -3062,7 +3066,7 @@ impl CasemoveApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let confirm_button = egui::Button::new(
                     egui::RichText::new(if busy { "Renaming..." } else { "Rename" })
-                        .color(egui::Color32::WHITE),
+                        .color(theme::CARD),
                 )
                 .fill(theme::ACCENT);
                 if ui

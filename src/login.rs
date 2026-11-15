@@ -59,7 +59,7 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let width = ui.available_width();
     let open_inventory = egui::Button::new(
         egui::RichText::new(format!("{}  Inventory", egui_phosphor::regular::ARCHIVE))
-            .color(egui::Color32::WHITE),
+            .color(theme::CARD),
     )
     .fill(theme::ACCENT)
     .min_size(egui::vec2(width, 36.0));
@@ -168,7 +168,7 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     };
     let sign_in = egui::Button::new(
         egui::RichText::new(format!("{}  {text}", egui_phosphor::regular::SIGN_IN))
-            .color(egui::Color32::WHITE),
+            .color(theme::CARD),
     )
     .fill(theme::ACCENT)
     .min_size(egui::vec2(width, 36.0));

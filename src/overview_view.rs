@@ -210,14 +210,7 @@ fn overview_data(app: &CasemoveApp) -> OverviewData {
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut load = false;
     let mut connect_inventory = false;
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: theme::PAGE_MARGIN,
-            right: theme::PAGE_MARGIN,
-            top: 14,
-            bottom: 10,
-        })
-        .show(ui, |ui| {
+    theme::page().show(ui, |ui| {
             header(ui, app, &mut load);
             ui.add_space(10.0);
             if !app.storage_aggregate_error.is_empty() {
@@ -277,8 +270,8 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
                     greeting(),
                     profile_display_name(app.profile.clone())
                 ))
-                .size(theme::TITLE_SIZE)
-                .strong(),
+                .size(theme::HEADING_SIZE)
+                .color(theme::TEXT_STRONG),
             );
             let units = app
                 .inventory
