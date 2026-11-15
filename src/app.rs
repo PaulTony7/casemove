@@ -194,6 +194,8 @@ pub struct CasemoveApp {
     /// `hasAskedCloseSteam`).
     pub steam_asked: bool,
     pub steam_checking: bool,
+    /// Account whose saved login waits for the Steam check to finish.
+    pending_saved_login: Option<String>,
     /// CM connection state from the core monitor.
     pub conn_state: app_core::ConnState,
     pub reconnecting: bool,
@@ -343,6 +345,7 @@ impl CasemoveApp {
             steam_prompt: None,
             steam_asked: false,
             steam_checking: false,
+            pending_saved_login: None,
             conn_state: app_core::ConnState::Connected,
             reconnecting: false,
             update_error: String::new(),
@@ -500,7 +503,8 @@ impl CasemoveApp {
                     .map(|account| account.username.clone())
                 {
                     // No live session: resume the most recently used saved
-                    // login, so opening the app lands signed in.
+                    // login, so opening the app lands signed in. It still
+                    // answers the Steam-close prompt first.
                     self.login_saved(account);
                 }
             }
@@ -672,30 +676,38 @@ impl CasemoveApp {
             },
             Message::SteamRunning(result) => {
                 self.steam_checking = false;
+                let waiting = self.pending_saved_login.take();
                 match result {
                     Ok(pid) => {
                         self.steam_prompt = Some(SteamPrompt {
                             pid,
                             ..Default::default()
-                        })
+                        });
                     }
-                    Err(error) => {
-                        self.login_error = error;
-                    }
+                    Err(error) => self.login_error = error,
+                }
+                // Steam is not running, so the waiting sign-in skips the
+                // prompt (it was only opened because the check was pending).
+                if self.steam_prompt.as_ref().is_some_and(|prompt| prompt.pid.is_none())
+                    && let Some(account) = waiting
+                {
+                    self.steam_prompt = None;
+                    self.continue_saved_login(account);
                 }
             }
             Message::SteamClosed(result) => {
-                if let Some(prompt) = &mut self.steam_prompt {
-                    prompt.closing = false;
-                    if let Err(error) = result {
-                        prompt.error = error;
-                        return;
-                    }
+                if self.steam_prompt.is_none() {
+                    return;
                 }
-                // Legacy asked once whether to close Steam, then logged in
-                // regardless of the result.
-                self.steam_prompt = None;
-                self.submit_login();
+                match result {
+                    Ok(()) => {
+                        // Legacy asked once whether to close Steam, then
+                        // logged in regardless of the result.
+                        self.steam_prompt = None;
+                        self.submit_login();
+                    }
+                    Err(error) => self.report_steam_still_running(error),
+                }
             }
             Message::StorageAll(attempt, result) => {
                 self.storage_aggregate_busy = false;
@@ -1241,14 +1253,6 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists the open page so a restart lands where the user left off.
-    pub fn save_view(&self, view: &'static str) {
-        let core = self.core.clone();
-        drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("ui.view", view);
-        }));
-    }
-
     /// Persists how many storage-contents rows are currently loaded.
     pub fn save_limited(&self) {
         let core = self.core.clone();
@@ -1315,6 +1319,15 @@ impl CasemoveApp {
         self.form.guard_code.clear();
         self.form.shared_secret.clear();
         self.form.show_secret = false;
+        // A saved-account sign-in asks about Steam exactly like a typed one.
+        if self.steam_gate() {
+            self.pending_saved_login = Some(account);
+            return;
+        }
+        self.begin_saved_login(account);
+    }
+
+    fn begin_saved_login(&mut self, account: String) {
         self.login_busy = true;
         self.attempt += 1;
         let attempt = self.attempt;
@@ -1328,6 +1341,18 @@ impl CasemoveApp {
         });
     }
 
+    /// The Steam-close prompt every regular login answers first (legacy
+    /// `loginForm.onSubmit`). Returns `true` when it opened; the login resumes
+    /// from the prompt.
+    fn steam_gate(&mut self) -> bool {
+        if self.steam_asked || !self.show_steam_login || self.steam_prompt.is_some() {
+            return false;
+        }
+        self.steam_asked = true;
+        self.check_steam();
+        true
+    }
+
     pub fn submit_login(&mut self) {
         if self.loading || self.login_busy || self.session_busy || self.profile.is_some() {
             return;
@@ -1335,13 +1360,7 @@ impl CasemoveApp {
         // Legacy `loginForm.onSubmit`: before the first regular login of the
         // session, offer to close a running Steam client when the
         // `steamLogin` preference is on. QR/web-token logins skip the check.
-        if self.method == LoginMethod::Regular
-            && !self.steam_asked
-            && self.show_steam_login
-            && self.steam_prompt.is_none()
-        {
-            self.steam_asked = true;
-            self.check_steam();
+        if self.method == LoginMethod::Regular && self.steam_gate() {
             return;
         }
         match self.method {
@@ -1701,6 +1720,26 @@ impl CasemoveApp {
     pub fn dismiss_steam_prompt(&mut self) {
         self.steam_prompt = None;
         self.steam_asked = false;
+        self.pending_saved_login = None;
+    }
+
+    /// Starts a saved login whose Steam check just finished without a prompt.
+    fn continue_saved_login(&mut self, account: String) {
+        self.pending_saved_login = None;
+        self.steam_prompt = None;
+        self.begin_saved_login(account);
+    }
+
+    /// Steam was asked to close but is still running (a stuck process, or no
+    /// permission). Keeps the prompt open with the reason so the user can
+    /// cancel or log in anyway, instead of logging in as if it worked.
+    pub fn report_steam_still_running(&mut self, error: String) {
+        if let Some(prompt) = &mut self.steam_prompt {
+            prompt.closing = false;
+            prompt.error = error;
+        } else {
+            self.login_error = error;
+        }
     }
 
     /// Legacy "Dont show this again": clears the `steamLogin` preference.
@@ -1971,23 +2010,28 @@ impl eframe::App for CasemoveApp {
                 }
             });
 
-        self.removal_dialog(ctx);
-        self.move_to_storage_dialog(ctx);
-        self.rename_storage_dialog(ctx);
-        self.trade_up_review_dialog(ctx);
-        self.steam_prompt_dialog(ctx);
-        self.open_container_dialog(ctx);
+        // egui's `Modal::should_close` is true on Esc for whichever modal
+        // draws first, and consumes the key while doing so. The decision is
+        // taken once here, before any modal renders, and given to every open
+        // dialog, so the dialog on top receives it.
+        let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        self.open_container_dialog(ctx, escape);
+        self.steam_prompt_dialog(ctx, escape);
+        self.trade_up_review_dialog(ctx, escape);
+        self.rename_storage_dialog(ctx, escape);
+        self.move_to_storage_dialog(ctx, escape);
+        self.removal_dialog(ctx, escape);
     }
 }
 
 // --- container opening -----------------------------------------------------
 
 impl CasemoveApp {
-    fn open_container_dialog(&mut self, ctx: &egui::Context) {
+    fn open_container_dialog(&mut self, ctx: &egui::Context, escape: bool) {
         let Some(dialog) = self.open_container.clone() else {
             return;
         };
-        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !dialog.busy && escape {
             self.open_container = None;
             return;
         }
@@ -2082,11 +2126,11 @@ impl CasemoveApp {
 // --- Steam-close prompt ----------------------------------------------------
 
 impl CasemoveApp {
-    fn steam_prompt_dialog(&mut self, ctx: &egui::Context) {
+    fn steam_prompt_dialog(&mut self, ctx: &egui::Context, escape: bool) {
         let Some(prompt) = self.steam_prompt.clone() else {
             return;
         };
-        if !prompt.closing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !prompt.closing && escape {
             self.dismiss_steam_prompt();
             return;
         }
@@ -2095,7 +2139,7 @@ impl CasemoveApp {
         let mut cancel = false;
         let mut dont_show = prompt.dont_show;
         let can_close = prompt.pid.is_some() && !prompt.closing && !self.steam_checking;
-        egui::Modal::new(egui::Id::new("steam_running")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("steam_running")).show(ctx, |ui| {
             ui.set_min_width(440.0);
             ui.label(egui::RichText::new("Steam is currently running").size(19.0).strong());
             ui.add_space(8.0);
@@ -2127,7 +2171,7 @@ impl CasemoveApp {
                 .fill(egui::Color32::from_rgb(0x1f, 0x7f, 0x47));
                 if ui
                     .add_enabled(can_close, close_button)
-                    .on_disabled_hover_text("Steam's process could not be identified")
+                    .on_disabled_hover_text("Steam's process could not be identified; log in without closing it")
                     .clicked()
                 {
                     close_and_login = true;
@@ -2152,7 +2196,7 @@ impl CasemoveApp {
         if dont_show {
             self.forget_steam_prompt();
         }
-        if cancel {
+        if cancel || modal.should_close() {
             self.dismiss_steam_prompt();
         } else if close_and_login {
             self.close_steam();
@@ -2165,11 +2209,11 @@ impl CasemoveApp {
 // --- trade-up review -------------------------------------------------------
 
 impl CasemoveApp {
-    fn trade_up_review_dialog(&mut self, ctx: &egui::Context) {
+    fn trade_up_review_dialog(&mut self, ctx: &egui::Context, escape: bool) {
         if !self.trade_up_review {
             return;
         }
-        if !self.trade_up.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !self.trade_up.busy && escape {
             self.trade_up_review = false;
             return;
         }
@@ -2386,7 +2430,6 @@ impl CasemoveApp {
                 self.storage_open = key == "storage";
                 self.settings_open = key == "settings";
                 self.trade_up_open = key == "tradeup";
-                self.save_view(key);
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {
@@ -2798,11 +2841,11 @@ impl CasemoveApp {
 
     // --- removal confirmation ---------------------------------------------
 
-    fn move_to_storage_dialog(&mut self, ctx: &egui::Context) {
+    fn move_to_storage_dialog(&mut self, ctx: &egui::Context, escape: bool) {
         let Some(dialog) = self.move_dialog.clone() else {
             return;
         };
-        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !dialog.busy && escape {
             self.move_dialog = None;
             return;
         }
@@ -2978,11 +3021,11 @@ impl CasemoveApp {
         }
     }
 
-    fn rename_storage_dialog(&mut self, ctx: &egui::Context) {
+    fn rename_storage_dialog(&mut self, ctx: &egui::Context, escape: bool) {
         let Some(dialog) = self.rename_dialog.clone() else {
             return;
         };
-        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !dialog.busy && escape {
             self.rename_dialog = None;
             return;
         }
@@ -3049,10 +3092,11 @@ impl CasemoveApp {
         }
     }
 
-    fn removal_dialog(&mut self, ctx: &egui::Context) {        let Some(username) = self.pending_removal.clone() else {
+    fn removal_dialog(&mut self, ctx: &egui::Context, escape: bool) {
+        let Some(username) = self.pending_removal.clone() else {
             return;
         };
-        if !self.removing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !self.removing && escape {
             self.pending_removal = None;
             return;
         }

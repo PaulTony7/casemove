@@ -31,7 +31,8 @@ pub async fn running() -> Result<Option<u32>, String> {
 }
 
 /// Asks the OS to close the Steam client, then waits for it to disappear
-/// (legacy killed the process and returned immediately).
+/// (legacy killed the process and returned immediately). `Ok` means Steam is
+/// gone; anything still running is reported so the prompt can stay open.
 pub async fn close(pid: u32) -> Result<(), String> {
     terminate(pid)?;
     for _ in 0..20 {
@@ -40,7 +41,7 @@ pub async fn close(pid: u32) -> Result<(), String> {
             return Ok(());
         }
     }
-    Ok(())
+    Err("Steam is still running. Close it yourself, or log in without closing it.".to_owned())
 }
 
 #[cfg(windows)]
