@@ -463,6 +463,16 @@ impl CasemoveApp {
                 // as a session exists instead of waiting for a button.
                 if self.profile.is_some() {
                     self.refresh_inventory();
+                } else if let Some(account) = self
+                    .accounts
+                    .iter()
+                    .rev()
+                    .find(|account| account.has_saved_login)
+                    .map(|account| account.username.clone())
+                {
+                    // No live session: resume the most recently used saved
+                    // login, so opening the app lands signed in.
+                    self.login_saved(account);
                 }
             }
             Message::SchemaRefresh(result) => match result {
