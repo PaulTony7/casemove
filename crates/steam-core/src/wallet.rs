@@ -144,6 +144,39 @@ fn buffered_wallet_updates(connection: &steam_vent::Connection) -> Vec<WalletUpd
         .collect()
 }
 
+/// Logon state changes from the CM: `CMsgClientLogOnResponse` after a
+/// (re)connect and `CMsgClientLoggedOff` when the CM ends the session.
+pub fn logon_stream(
+    connection: &steam_vent::Connection,
+) -> std::pin::Pin<Box<dyn Stream<Item = bool> + Send>> {
+    use steam_vent_proto_steam::steammessages_clientserver_login::{
+        CMsgClientLoggedOff, CMsgClientLogonResponse,
+    };
+    use steam_vent_proto_steam::enums_clientserver::EMsg;
+    let online = connection
+        .on::<CMsgClientLogonResponse>()
+        .map(|result| result.ok().is_some_and(|message| message.eresult() == 1));
+    let offline = connection
+        .on::<CMsgClientLoggedOff>()
+        .map(|_| false);
+    // Messages pushed between logon and this subscription sit in the
+    // unprocessed ring; there, any logoff means the session ended.
+    let buffered = connection
+        .take_unprocessed()
+        .into_iter()
+        .filter(|raw| {
+            raw.kind == EMsg::k_EMsgClientLoggedOff || raw.kind == EMsg::k_EMsgClientLogOnResponse
+        })
+        .map(|raw| {
+            raw.kind != EMsg::k_EMsgClientLoggedOff
+                && raw
+                    .into_message::<CMsgClientLogonResponse>()
+                    .is_ok_and(|message| message.eresult() == 1)
+        })
+        .collect::<Vec<bool>>();
+    Box::pin(tokio_stream::iter(buffered).chain(online.chain(offline)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

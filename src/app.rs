@@ -170,6 +170,9 @@ pub struct CasemoveApp {
     /// `hasAskedCloseSteam`).
     pub steam_asked: bool,
     pub steam_checking: bool,
+    /// CM connection state from the core monitor.
+    pub conn_state: app_core::ConnState,
+    pub reconnecting: bool,
     /// Container-opening dialog (legacy `OpenContainer`).
     pub open_container: Option<OpenContainerDialog>,
     /// Message from the last failed update check (legacy logged it).
@@ -314,6 +317,8 @@ impl CasemoveApp {
             steam_prompt: None,
             steam_asked: false,
             steam_checking: false,
+            conn_state: app_core::ConnState::Connected,
+            reconnecting: false,
             update_error: String::new(),
             open_container: None,
             overview_by,
@@ -421,6 +426,16 @@ impl CasemoveApp {
                             item_id,
                             item,
                         });
+                }
+            }
+            AppEvent::ConnectionChanged(state) => {
+                // The core monitor reports the CM's logon state; a fresh
+                // attach reloads the inventory once it succeeds.
+                let recovered = matches!(state, app_core::ConnState::Connected)
+                    && !matches!(self.conn_state, app_core::ConnState::Connected);
+                self.conn_state = state;
+                if recovered {
+                    self.refresh_inventory();
                 }
             }
             AppEvent::InventoryError(error) => {
@@ -781,6 +796,16 @@ impl CasemoveApp {
                         }
                         Err(error) => self.withdraw_error = error,
                     }
+                }
+            }
+            Message::Reconnect(result) => {
+                self.reconnecting = false;
+                match result {
+                    Ok(()) => {
+                        self.storage_notice = "Reconnected to the CS2 Game Coordinator.".to_owned();
+                        self.refresh_inventory();
+                    }
+                    Err(error) => self.login_error = error,
                 }
             }
             Message::ContainerOpened {
@@ -1616,6 +1641,24 @@ impl CasemoveApp {
         });
     }
 
+    /// Legacy `retryConnection`: re-runs the GC handshake and inventory load.
+    pub fn retry_connection(&mut self) {
+        if self.reconnecting || self.session_busy || self.profile.is_none() {
+            return;
+        }
+        self.reconnecting = true;
+        self.login_error.clear();
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = match core.session_generation() {
+                Some(generation) => app_core::reconnect(&core, generation).await,
+                None => Err("Sign in to Steam first.".to_owned()),
+            };
+            reply.send(Message::Reconnect(result));
+        });
+    }
+
     /// Legacy `checkSteam`: looks for a running Steam client and prompts.
     pub fn check_steam(&mut self) {
         self.steam_checking = true;
@@ -2260,10 +2303,15 @@ impl CasemoveApp {
                 ui.label(
                     egui::RichText::new(profile_display_name(self.profile.clone())).size(13.0),
                 );
-                let (status, color) = if self.profile.is_some() {
-                    ("Signed in to Steam", theme::GREEN)
-                } else {
-                    ("Not connected", theme::ERROR_STRONG)
+                let (status, color) = match (&self.conn_state, self.profile.is_some()) {
+                    (_, false) => ("Not connected", theme::ERROR_STRONG),
+                    (app_core::ConnState::Connected, true) => ("Connected", theme::GREEN),
+                    (app_core::ConnState::Retrying | app_core::ConnState::Lost, true) => {
+                        ("Reconnecting...", egui::Color32::from_rgb(0xf5, 0xc2, 0x42))
+                    }
+                    (app_core::ConnState::RetryFailed(_), true) => {
+                        ("Not connected", theme::ERROR_STRONG)
+                    }
                 };
                 ui.label(egui::RichText::new(status).size(11.0).color(color));
                 let balance = wallet_balance(self.wallet.clone());
@@ -2323,6 +2371,33 @@ impl CasemoveApp {
             }
         }
 
+        let disconnected = self.profile.is_some()
+            && !matches!(self.conn_state, app_core::ConnState::Connected);
+        if disconnected {
+            ui.add_space(10.0);
+            let (label, tip) = match &self.conn_state {
+                app_core::ConnState::RetryFailed(error) => ("Retry connection", Some(error.clone())),
+                _ => ("Retrying...", None),
+            };
+            let button = egui::Button::new(
+                egui::RichText::new(format!(
+                    "{}  {label}",
+                    egui_phosphor::regular::ARROW_CLOCKWISE
+                ))
+                .color(theme::TEXT),
+            )
+            .fill(egui::Color32::from_rgb(0x2f, 0x3a, 0x2a))
+            .min_size(egui::vec2(ui.available_width(), 30.0));
+            let response = ui
+                .add_enabled(!self.reconnecting, button)
+                .on_hover_text(
+                    tip.unwrap_or_else(|| "Retries the CS2 Game Coordinator connection".into()),
+                );
+            if response.clicked() {
+                self.retry_connection();
+            }
+        }
+
         ui.add_space((ui.available_height() - 40.0).max(0.0));
         let mut sign_out = false;
         ui.horizontal(|ui| {
@@ -2378,12 +2453,20 @@ impl CasemoveApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
 
-            let (session, color) = if self.session_busy {
+            let (session, color) = if self.session_busy || self.loading {
                 ("Connecting…", theme::STATUS_TEXT)
-            } else if self.profile.is_some() {
-                ("Steam connected", theme::GREEN)
-            } else {
+            } else if self.profile.is_none() {
                 ("Steam not connected", theme::ERROR_STRONG)
+            } else {
+                match &self.conn_state {
+                    app_core::ConnState::Connected => ("Steam connected", theme::GREEN),
+                    app_core::ConnState::Lost | app_core::ConnState::Retrying => {
+                        ("Reconnecting to CS2…", egui::Color32::from_rgb(0xf5, 0xc2, 0x42))
+                    }
+                    app_core::ConnState::RetryFailed(_) => {
+                        ("CS2 disconnected", theme::ERROR_STRONG)
+                    }
+                }
             };
             segment(ui, session, color);
 

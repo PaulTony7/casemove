@@ -1,19 +1,20 @@
 use crate::Core;
 use app_commands::{InventoryChangeReason, InventoryItem, InventorySnapshot, InventorySticker};
 use domain::trade_unlock_ms;
-use gc_cs2::{EconItem, InventoryChange, InventoryClient, InventoryError};
+pub(crate) use gc_cs2::InventoryClient;
+use gc_cs2::{EconItem, InventoryChange, InventoryError};
 use item_schema::ItemSchema;
 
 /// Legacy storage units hold 1000 items.
 const STORAGE_CAPACITY: usize = 1000;
 
 #[derive(Default)]
-pub struct InventoryState(tokio::sync::Mutex<Option<GcSlot<InventoryClient>>>);
+pub struct InventoryState(pub(crate) tokio::sync::Mutex<Option<GcSlot<InventoryClient>>>);
 
-struct GcSlot<Client> {
-    generation: u64,
-    client: Option<Client>,
-    items: Vec<EconItem>,
+pub(crate) struct GcSlot<Client> {
+    pub(crate) generation: u64,
+    pub(crate) client: Option<Client>,
+    pub(crate) items: Vec<EconItem>,
 }
 
 fn clear_generation<Client>(slot: &mut Option<GcSlot<Client>>, generation: u64) {
@@ -25,7 +26,7 @@ fn clear_generation<Client>(slot: &mut Option<GcSlot<Client>>, generation: u64) 
     }
 }
 
-fn prepare_slot<Client>(
+pub(crate) fn prepare_slot<Client>(
     slot: &mut Option<GcSlot<Client>>,
     generation: u64,
 ) -> Result<bool, String> {
@@ -421,7 +422,7 @@ fn apply_inventory_change(
     }
 }
 
-fn listen_inventory_changes(
+pub(crate) fn listen_inventory_changes(
     inventory: std::sync::Arc<InventoryState>,
     generation: u64,
     steam_id: String,

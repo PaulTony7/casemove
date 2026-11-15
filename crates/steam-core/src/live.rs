@@ -64,6 +64,17 @@ impl SteamConnection {
         }
     }
 
+    /// CM logon state changes (`true` = logged on), so the UI can show a lost
+    /// session and reconnect.
+    pub fn logon_stream(
+        &self,
+    ) -> Option<std::pin::Pin<Box<dyn tokio_stream::Stream<Item = bool> + Send>>> {
+        match self {
+            Self::SteamVent { connection, .. } => Some(crate::wallet::logon_stream(connection)),
+            Self::BrowserToken { .. } => None,
+        }
+    }
+
     /// Wallet balance updates from the CM. Only the SteamVent transport
     /// receives `CMsgClientWalletInfoUpdate`; browser-token sessions return
     /// `None` (no balance available without the CM connection).

@@ -23,7 +23,8 @@ git history.
 
 - Verify the Steam-close prompt on Windows (the prompt, "Close and login", and
   the "Dont show this again" latch are ported).
-- Automatic Steam/GC reconnection and accurate connection-loss status.
+- Verify the connection monitor against a real session (CM logoff, automatic
+  retry, and the Retry connection button).
 
 ## Inventory And Item Data
 

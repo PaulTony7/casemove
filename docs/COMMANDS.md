@@ -45,7 +45,7 @@ endpoint omits identity on profiles Steam considers unset; allowlisted avatar
 hosts only). Enrichment is best-effort, never fails a login, and logs one
 `casemove enrich:` line per login for diagnosis; the snapshot is retained for
 `steam_session` after a frontend reload.
-| `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
+| `steam_retry_connection()` | `retryConnection` | `app_core::reconnect` re-runs the GC handshake + inventory attach on the current session; the core monitor also retries automatically after `ClientLoggedOff` (5s/15s/30s/60s backoff) | ◐ |
 | `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | `src/steam.rs` finds the client process (tasklist on Windows, `/proc` on Linux, `pgrep` on macOS) and terminates it; the login form prompts first, once per session, when `steamLogin` is on | ◐ |
 
 ### Inventory, storage units & items
@@ -98,7 +98,7 @@ entries never sent (`errorMain`, `checkSteam`, `closeSteam`, `login`,
 | New event | Legacy channel | Payload | Status |
 |---|---|---|---|
 | `inventory:changed` | `userEvents` code 1 | `{ reason: itemRemoved\|itemChanged\|itemAcquired, item, itemId }`; updates the UI snapshot from retained-client SO create/update/remove messages. Live-account verification pending | ◐ |
-| `steam:connection` | `userEvents` code 2 | `{ state: disconnected\|reconnected\|fatalError }` | ☐ |
+| `steam:connection` | `userEvents` code 2 | `ConnState` (Connected/Lost/Retrying/RetryFailed) from `CMsgClientLogOnResponse`/`CMsgClientLoggedOff`; shown in the sidebar and status strip, with a Retry connection button | ◐ |
 | `gc:connection` | `userEvents` code 3 | `{ state: connected\|disconnected, reason? }` | ☐ |
 | `wallet:changed` | `userEvents` code 4 | `WalletInfo { hasWallet, balance, currency }` — balance in whole currency units (raw cents ÷ 100), currency mapped from Steam's numeric codes like legacy | ☑ |
 | `pricing:results` | `pricing` | Price map keyed `item_name+wear` | ☐ |

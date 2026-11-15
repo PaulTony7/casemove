@@ -1,4 +1,4 @@
-use crate::{AppEvent, Core};
+use crate::{AppEvent, ConnState, Core};
 use app_commands::{
     BrowserTokenLoginParams, BrowserTokenPayload, PasswordLoginParams, SteamProfile, WalletInfo,
 };
@@ -203,6 +203,17 @@ impl Core {
 
         if let Some(stream) = stream {
             spawn_wallet_forwarder(self.clone(), generation, stream);
+        }
+        // The CM monitor tracks this session's logon state and retries the
+        // inventory attach when it is lost.
+        if self.session_generation() == Some(generation)
+            && let Ok(Some(connection)) = self
+                .session
+                .with_connection(|connection, _| async move { Some(connection) })
+                .await
+        {
+            self.set_conn(ConnState::Connected);
+            crate::spawn_connection_monitor(self, generation, connection);
         }
     }
 

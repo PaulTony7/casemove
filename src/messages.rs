@@ -60,6 +60,8 @@ pub enum Message {
         attempt: u64,
         result: Result<(), String>,
     },
+    /// A manual "Retry connection" finished (legacy `retryConnection`).
+    Reconnect(Result<(), String>),
     /// Result of opening a container.
     ContainerOpened {
         attempt: u64,

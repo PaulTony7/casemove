@@ -3,6 +3,7 @@
 //! in `src-tauri/`; see docs/COMMANDS.md for the contract these names come from.
 
 mod accounts;
+mod connection;
 mod inventory;
 mod prices;
 mod schema;
@@ -10,6 +11,7 @@ mod session;
 mod update;
 
 pub use accounts::initialize_store;
+pub use connection::{reconnect, spawn as spawn_connection_monitor};
 pub use inventory::InventoryState;
 pub use prices::fetch_live_prices;
 pub use schema::SchemaRefreshReport;
@@ -39,6 +41,7 @@ pub enum AppEvent {
         item: Option<Box<app_commands::InventoryItem>>,
     },
     InventoryError(String),
+    ConnectionChanged(ConnState),
 }
 
 /// Delivers core events to the UI and requests a repaint when one lands.
@@ -60,6 +63,17 @@ impl EventSink {
     }
 }
 
+/// Live CM connection state shown in the sidebar and status strip.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConnState {
+    Connected,
+    /// The CM ended the session; the inventory attach is being retried.
+    Lost,
+    Retrying,
+    /// The last retry failed with this message.
+    RetryFailed(String),
+}
+
 /// Everything the command handlers need. Cheap to clone: every handle shares
 /// the same underlying state.
 #[derive(Clone)]
@@ -72,6 +86,7 @@ pub struct Core {
     schema_cache_path: Arc<PathBuf>,
     schema_cache_valid: Arc<AtomicBool>,
     pub events: EventSink,
+    conn: Arc<std::sync::Mutex<ConnState>>,
 }
 
 impl Core {
@@ -114,7 +129,31 @@ impl Core {
             schema_cache_path: Arc::new(schema_path),
             schema_cache_valid: Arc::new(AtomicBool::new(schema_cache_valid)),
             events,
+            conn: Arc::new(std::sync::Mutex::new(ConnState::Connected)),
         })
+    }
+
+    pub fn set_conn(&self, state: ConnState) {
+        if let Ok(mut current) = self.conn.lock() {
+            *current = state.clone();
+        }
+        self.events.emit(AppEvent::ConnectionChanged(state));
+    }
+
+    pub fn conn(&self) -> ConnState {
+        self.conn
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or(ConnState::Connected)
+    }
+
+    /// The generation of the current Steam session, if signed in.
+    pub fn session_generation(&self) -> Option<u64> {
+        self.session
+            .profile()
+            .ok()
+            .flatten()
+            .map(|profile| profile.generation)
     }
 
     fn schema_snapshot(&self) -> Result<Arc<ItemSchema>, String> {
