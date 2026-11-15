@@ -106,6 +106,16 @@ impl Default for TradeUpState {
     }
 }
 
+/// Container-opening dialog: the chosen container and its key.
+#[derive(Default, Clone)]
+pub struct OpenContainerDialog {
+    pub container_id: String,
+    pub container_name: String,
+    pub key_id: String,
+    pub busy: bool,
+    pub error: String,
+}
+
 /// State of the Steam-close prompt (legacy `closeSteamModal`).
 #[derive(Default, Clone)]
 pub struct SteamPrompt {
@@ -160,6 +170,8 @@ pub struct CasemoveApp {
     /// `hasAskedCloseSteam`).
     pub steam_asked: bool,
     pub steam_checking: bool,
+    /// Container-opening dialog (legacy `OpenContainer`).
+    pub open_container: Option<OpenContainerDialog>,
     /// Message from the last failed update check (legacy logged it).
     pub update_error: String,
     /// Error to show inside the open review dialog.
@@ -303,6 +315,7 @@ impl CasemoveApp {
             steam_asked: false,
             steam_checking: false,
             update_error: String::new(),
+            open_container: None,
             overview_by,
             currency: pricing::Currency::new(&currency_code),
             currency_code,
@@ -767,6 +780,30 @@ impl CasemoveApp {
                             self.refresh_inventory();
                         }
                         Err(error) => self.withdraw_error = error,
+                    }
+                }
+            }
+            Message::ContainerOpened {
+                attempt,
+                container,
+                result,
+            } => {
+                if attempt != self.attempt {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        self.open_container = None;
+                        self.storage_notice = format!(
+                            "Opening {container}. The new item appears once the Game Coordinator answers."
+                        );
+                        self.refresh_inventory();
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = &mut self.open_container {
+                            dialog.busy = false;
+                            dialog.error = error;
+                        }
                     }
                 }
             }
@@ -1626,6 +1663,57 @@ impl CasemoveApp {
         self.submit_login();
     }
 
+    /// Opens the container dialog for one row.
+    pub fn begin_open_container(&mut self, item: &InventoryItem) {
+        if self.session_busy || self.profile.is_none() {
+            return;
+        }
+        // Legacy paired the container with the user's first key; preselect it
+        // so "Open" works in one click.
+        let key = self
+            .inventory
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .find(|row| crate::inventory::matches_property(row, "Key"))
+            })
+            .map(|row| row.id.clone())
+            .unwrap_or_default();
+        self.storage_notice.clear();
+        self.open_container = Some(OpenContainerDialog {
+            container_id: item.id.clone(),
+            container_name: item.name.clone(),
+            key_id: key,
+            ..Default::default()
+        });
+    }
+
+    pub fn submit_open_container(&mut self) {
+        let Some(dialog) = &mut self.open_container else {
+            return;
+        };
+        if dialog.busy || dialog.key_id.is_empty() {
+            return;
+        }
+        dialog.busy = true;
+        dialog.error.clear();
+        let container = dialog.container_id.clone();
+        let key = dialog.key_id.clone();
+        let attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = core.open_container(container.clone(), key).await;
+            reply.send(Message::ContainerOpened {
+                attempt,
+                container,
+                result,
+            });
+        });
+    }
+
     pub fn rename_storage(&mut self) {
         let Some(dialog) = &mut self.rename_dialog else {
             return;
@@ -1818,6 +1906,106 @@ impl eframe::App for CasemoveApp {
         self.rename_storage_dialog(ctx);
         self.trade_up_review_dialog(ctx);
         self.steam_prompt_dialog(ctx);
+        self.open_container_dialog(ctx);
+    }
+}
+
+// --- container opening -----------------------------------------------------
+
+impl CasemoveApp {
+    fn open_container_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.open_container.clone() else {
+            return;
+        };
+        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.open_container = None;
+            return;
+        }
+        let keys: Vec<(String, String)> = self
+            .inventory
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|row| crate::inventory::matches_property(row, "Key"))
+                    .map(|row| {
+                        let label = row
+                            .custom_name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| row.name.clone());
+                        (row.id.clone(), label)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let selected = keys
+            .iter()
+            .find(|(id, _)| *id == dialog.key_id)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| "Select a key".to_owned());
+        let mut key_id = dialog.key_id.clone();
+        let mut open = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("open_container")).show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            ui.label(egui::RichText::new("Open container").size(19.0).strong());
+            ui.label(
+                egui::RichText::new(&dialog.container_name)
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+            if !dialog.error.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&dialog.error).size(12.0).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Key").size(12.0));
+            egui::ComboBox::from_id_salt("open-container-key")
+                .selected_text(selected)
+                .width(340.0)
+                .show_ui(ui, |ui| {
+                    for (id, label) in &keys {
+                        ui.selectable_value(&mut key_id, id.clone(), label);
+                    }
+                });
+            if keys.is_empty() {
+                ui.label(
+                    egui::RichText::new("No keys in this inventory.")
+                        .size(11.0)
+                        .color(theme::MUTED),
+                );
+            }
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let button = egui::Button::new(
+                    egui::RichText::new(if dialog.busy { "Opening..." } else { "Open" })
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::ACCENT);
+                if ui
+                    .add_enabled(!dialog.busy && !key_id.is_empty(), button)
+                    .clicked()
+                {
+                    open = true;
+                }
+                if ui
+                    .add_enabled(!dialog.busy, egui::Button::new("Cancel"))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        if let Some(dialog) = &mut self.open_container {
+            dialog.key_id = key_id;
+        }
+        if cancel {
+            self.open_container = None;
+        } else if open {
+            self.submit_open_container();
+        }
     }
 }
 

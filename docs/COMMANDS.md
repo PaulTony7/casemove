@@ -67,7 +67,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 |---|---|---|---|
 | `tradeup_possible_outcomes(items) -> Outcomes` | `getTradeUpPossible` + `-reply` | `domain::outcomes` over the bundled `backup/collections.json`: rarity skip, wear bucket, float, and hit-share percentage; outcomes are priced in-process | ◐ |
 | `tradeup_process(ids, rarity)` | `processTradeOrder` | Hand-ported craft payload (rarity key + ten LE u64 ids) sent as the raw `Craft` GC message; the GC reports the result through inventory changes | ◐ |
-| `open_container(ids)` | `openContainer` | `Language.UnlockCrate` payload (zero prefix + LE u64 ids) | ◐ |
+| `open_container(ids)` | `openContainer` | `Language.UnlockCrate` payload (zero prefix + LE u64 ids) after ownership/key-validity/tradehold checks; fire-and-forget, the unlocked item arrives as an inventory change | ◐ |
 
 ### Pricing, currency & settings
 

@@ -294,18 +294,29 @@ pub fn matches_filters(
 }
 
 /// Boolean item-property toggles (legacy `characteristics`).
-fn matches_property(item: &InventoryItem, property: &str) -> bool {
+pub fn matches_property(item: &InventoryItem, property: &str) -> bool {
     match property {
         "Tradehold" => item.trade_unlock.is_some(),
         "Nametag" => item.custom_name.is_some(),
         "Moveable" => item.moveable,
         "Equipped CT" => item.equipped_ct,
         "Equipped T" => item.equipped_t,
+        "Container" => item
+            .image_path
+            .as_deref()
+            .or(item.image_url.as_deref())
+            .is_some_and(|path| path.contains("weapon_cases")),
         "Stickers" => item
             .stickers
             .iter()
             .any(|sticker| sticker.kind == "Sticker"),
         "Patches" => item.stickers.iter().any(|sticker| sticker.kind == "Patch"),
+        // Legacy's container opening always used the first key in the box.
+        "Key" => item
+            .image_path
+            .as_deref()
+            .or(item.image_url.as_deref())
+            .is_some_and(|path| path.contains("crate_key")),
         _ => false,
     }
 }
@@ -495,6 +506,21 @@ mod tests {
         let mut items = vec![grouped(skins), grouped(skins2)];
         sort_rows(&mut items, "category");
         assert_eq!(names(&items), vec!["AK-47 | Redline", "AWP | Asiimov"]);
+    }
+
+    #[test]
+    fn key_and_container_properties_follow_the_econ_path() {
+        let mut key = row(1, "CS:GO Case Key", 1, 0, None);
+        key.image_path = Some("econ/tools/crate_key".into());
+        let mut case = row(2, "Dreams & Nightmares Case", 2, 0, None);
+        case.image_path = Some("econ/tools/weapon_cases/crate_community_32".into());
+        let mut skin = row(3, "AK-47 | Redline", 3, 4, None);
+        skin.image_path = Some("econ/default_generated/weapon_ak47_red_light_large".into());
+        assert!(matches_property(&key, "Key"));
+        assert!(!matches_property(&key, "Container"));
+        assert!(matches_property(&case, "Container"));
+        assert!(!matches_property(&case, "Key"));
+        assert!(!matches_property(&skin, "Key") && !matches_property(&skin, "Container"));
     }
 
     #[test]

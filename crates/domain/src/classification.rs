@@ -37,6 +37,13 @@ pub const MAJORS: [&str; 17] = [
     "Katowice 2014",
 ];
 
+/// Whether an item completes the legacy "tradehold" (tradable-after) gate:
+/// a future unlock time whose name is not a key.
+pub fn trade_unlock_ms(name: &str, tradeable_after_secs: Option<u32>, now_ms: i64) -> Option<i64> {
+    let unlock_ms = i64::from(tradeable_after_secs?) * 1000;
+    (unlock_ms >= now_ms && !name.contains("Key")).then_some(unlock_ms)
+}
+
 pub fn classify_category(item_url: &str) -> Option<&'static str> {
     CATEGORIES
         .iter()

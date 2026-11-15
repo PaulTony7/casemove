@@ -1,5 +1,6 @@
 use crate::Core;
 use app_commands::{InventoryChangeReason, InventoryItem, InventorySnapshot, InventorySticker};
+use domain::trade_unlock_ms;
 use gc_cs2::{EconItem, InventoryChange, InventoryClient, InventoryError};
 use item_schema::ItemSchema;
 
@@ -145,13 +146,6 @@ fn wear_name(wear: f64) -> &'static str {
     } else {
         "Battle-Scarred"
     }
-}
-
-/// Legacy `trade_unlock`: attribute 75 (raw seconds) must still be in the
-/// future and the item name must not be a key.
-fn trade_unlock_ms(name: &str, tradeable_after_secs: Option<u32>, now_ms: i64) -> Option<i64> {
-    let unlock_ms = i64::from(tradeable_after_secs?) * 1000;
-    (unlock_ms >= now_ms && !name.contains("Key")).then_some(unlock_ms)
 }
 
 /// Port of legacy `itemProcessorCanBeMoved` plus its post-overrides
@@ -344,6 +338,24 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
             .map(|kit| kit.name),
         graffiti,
     }
+}
+
+/// Legacy `item_url` check for containers (`econ/tools/weapon_cases` or a
+/// `crate_key` path).
+fn valid_container(row: &InventoryItem) -> bool {
+    row.image_path
+        .as_deref()
+        .or(row.image_url.as_deref())
+        .is_some_and(|path| path.contains("weapon_cases"))
+}
+
+/// Keys carry `crate_key` in their econ path and are never trade-held (the
+/// trade unlock skips names with `Key`).
+fn valid_key(row: &InventoryItem) -> bool {
+    row.image_path
+        .as_deref()
+        .or(row.image_url.as_deref())
+        .is_some_and(|path| path.contains("crate_key"))
 }
 
 /// Legacy `itemProcessors` trade-up gate for an enriched row: Covert items,
@@ -754,6 +766,80 @@ impl Core {
                     .await
                     .map_err(|error| match error {
                         InventoryError::InvalidRequest => "Invalid trade-up request.".to_owned(),
+                        error => error.to_string(),
+                    })
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    /// Opens a container with its key (legacy `openContainer`, sent from the
+    /// trade-up inventory). Both must be owned, tradeable, and the key must
+    /// match the container; the unlocked item arrives through inventory
+    /// changes, so success only means the request was sent.
+    pub async fn open_container(
+        &self,
+        container_id: String,
+        key_id: String,
+    ) -> Result<(), String> {
+        if container_id == key_id {
+            return Err("Pick a key for the container.".to_owned());
+        }
+        let container = parse_storage_id(&container_id)?;
+        let key = parse_storage_id(&key_id).map_err(|_| "Invalid item ID.".to_owned())?;
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = self.schema_snapshot()?;
+        session
+            .with_connection(|_connection, generation| async move {
+                let state = inventory.0.try_lock().map_err(|_| {
+                    "An inventory or storage request is already in progress.".to_owned()
+                })?;
+                let slot = state
+                    .as_ref()
+                    .filter(|slot| slot.generation == generation)
+                    .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+                let find = |id: u64, what: &str| {
+                    slot.items
+                        .iter()
+                        .find(|item| item.id == id)
+                        .map(|item| enrich_item(item.clone(), &schema))
+                        .ok_or_else(|| format!("That {what} is not in the current inventory."))
+                };
+                let container_row = find(container, "container")?;
+                let key_row = find(key, "key")?;
+                if container_row.is_storage_unit {
+                    return Err("Storage units cannot be opened.".to_owned());
+                }
+                if !valid_container(&container_row) {
+                    return Err(format!("{} is not a container.", container_row.name));
+                }
+                if !valid_key(&key_row) {
+                    return Err(format!("{} is not a key.", key_row.name));
+                }
+                if !key_row.moveable || !container_row.moveable {
+                    return Err("That item cannot be used right now.".to_owned());
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as i64)
+                    .unwrap_or(0);
+                if container_row.trade_unlock.is_some_and(|unlock| unlock > now)
+                    || key_row.trade_unlock.is_some_and(|unlock| unlock > now)
+                {
+                    return Err("That container or key is still on trade hold.".to_owned());
+                }
+                let client = slot.client.as_ref().ok_or_else(|| {
+                    "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                        .to_owned()
+                })?;
+                client
+                    .open_container(&[container, key])
+                    .await
+                    .map_err(|error| match error {
+                        InventoryError::InvalidRequest => {
+                            "Invalid container request.".to_owned()
+                        }
                         error => error.to_string(),
                     })
             })

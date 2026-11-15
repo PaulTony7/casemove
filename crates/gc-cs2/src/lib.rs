@@ -413,14 +413,22 @@ impl InventoryClient {
     }
 
     /// Opens a container/key pair (legacy `openContainer`/`Language.UnlockCrate`).
+    /// Fire-and-forget like legacy, which never waited for a reply; the
+    /// unlocked item arrives later as an inventory change.
     pub async fn open_container(&self, item_ids: &[u64]) -> Result<(), InventoryError> {
+        self.open_container_send(item_ids).await
+    }
+
+    async fn open_container_send(&self, item_ids: &[u64]) -> Result<(), InventoryError> {
         if item_ids.is_empty() || item_ids.contains(&0) {
             return Err(InventoryError::InvalidRequest);
         }
-        let payload = unlock_crate_payload(item_ids);
         if let Some(browser) = &self.browser {
             return browser
-                .send_raw(EGCItemMsg::k_EMsgGCUnlockCrate as i32 as u32, &payload)
+                .send_raw(
+                    EGCItemMsg::k_EMsgGCUnlockCrate as i32 as u32,
+                    &unlock_crate_payload(item_ids),
+                )
                 .await;
         }
         let coordinator = self
@@ -792,7 +800,12 @@ fn inventory_changes(event: CasketEvent) -> Result<Vec<InventoryChange>, Invento
     };
     let mut changes = Vec::with_capacity(upserts.len() + removals.len());
     for bytes in upserts {
-        changes.push(InventoryChange::Upsert(parse_item(&bytes)?));
+        // A single malformed object must not cut the change stream for the
+        // whole session (a container unlock can emit several).
+        match parse_item(&bytes) {
+            Ok(item) => changes.push(InventoryChange::Upsert(item)),
+            Err(error) => eprintln!("Skipping a malformed inventory object: {error}"),
+        }
     }
     for bytes in removals {
         changes.push(InventoryChange::Remove(removed_item_id(&bytes)?));
@@ -1097,6 +1110,7 @@ impl NetMessage for UnlockCrateRequest {
     const KIND: Self::KindEnum = EGCItemMsg::k_EMsgGCUnlockCrate;
 }
 
+
 /// Local GC message wrappers with kinds; the proto crate provides
 /// `RpcMessageWithKind` for none of these messages.
 macro_rules! gc_message {
@@ -1331,13 +1345,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_incremental_items_instead_of_silently_dropping_them() {
+    fn skips_malformed_incremental_items_without_ending_the_stream() {
+        // A bad upsert is dropped so a multi-object burst (e.g. a container
+        // unlock) still delivers its valid items; removals stay fatal.
         assert_eq!(
             inventory_changes(CasketEvent::Objects {
-                upserts: vec![vec![0xff]],
+                upserts: vec![vec![0xff], item(7, 2)],
                 removals: vec![],
-            }),
-            Err(InventoryError::InvalidItem)
+            })
+            .unwrap()
+            .len(),
+            1
         );
         assert_eq!(
             inventory_changes(CasketEvent::Objects {

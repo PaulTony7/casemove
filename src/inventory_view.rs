@@ -26,6 +26,7 @@ enum Section {
 struct SectionOut {
     open_storage: Option<(String, String)>,
     move_to: Option<(String, String)>,
+    open_container: Option<InventoryItem>,
     withdraw: Option<String>,
     rename: Option<(String, String)>,
     clipboard: Option<String>,
@@ -179,6 +180,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
     if out.export {
         app.export_csv();
+    }
+    if let Some(row) = out.open_container {
+        app.begin_open_container(&row);
     }
     if app.view.page != app.saved_page {
         app.saved_page = app.view.page;
@@ -710,7 +714,8 @@ fn filter_panel(ui: &mut egui::Ui, view: &mut InventoryViewState, majors: &[Stri
         });
     }
 
-    let properties: Vec<(&str, bool)> = ["Tradehold", "Nametag", "Moveable", "Equipped CT", "Equipped T"]
+    let properties: Vec<(&str, bool)> =
+        ["Tradehold", "Nametag", "Moveable", "Equipped CT", "Equipped T", "Key"]
         .into_iter()
         .map(|property| (property, view.selected_properties.contains(property)))
         .collect();
@@ -1291,12 +1296,24 @@ fn table(
                                 out.withdraw = Some(item.id.clone());
                             }
                         } else if item.moveable {
+                            let mut acted = false;
+                            if crate::inventory::matches_property(item, "Container") {
+                                let open = egui::Button::new(format!(
+                                    "{}  Open",
+                                    egui_phosphor::regular::PACKAGE
+                                ))
+                                .fill(theme::RAISED);
+                                if ui.add_enabled(!out.open_container.is_some(), open).clicked() {
+                                    out.open_container = Some(item.clone());
+                                    acted = true;
+                                }
+                            }
                             let move_button = egui::Button::new(format!(
                                 "{}  Move",
                                 egui_phosphor::regular::UPLOAD_SIMPLE
                             ))
                             .fill(theme::RAISED);
-                            if ui.add(move_button).clicked() {
+                            if !acted && ui.add(move_button).clicked() {
                                 out.move_to = Some((item.id.clone(), item.name.clone()));
                             }
                         }

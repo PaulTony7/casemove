@@ -56,8 +56,8 @@ enrichment.
   resulting item appearing through inventory changes.
 - Verify the picker against a real inventory (collections from the bundled
   `collections.json`, wear/StatTrak locks, storage-unit inputs).
-- Container-opening operation; confirm intended legacy UI scope before porting
-  (`open_container` payload is ported, no UI yet).
+- Verify container opening (Open action with key selection, validation, and the
+  unlocked item arriving through inventory changes).
 
 ## Verification And Release Gates
 

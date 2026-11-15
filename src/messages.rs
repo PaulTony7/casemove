@@ -60,6 +60,12 @@ pub enum Message {
         attempt: u64,
         result: Result<(), String>,
     },
+    /// Result of opening a container.
+    ContainerOpened {
+        attempt: u64,
+        container: String,
+        result: Result<(), String>,
+    },
     /// Result of renaming a storage unit.
     StorageRename {
         attempt: u64,
