@@ -10,16 +10,21 @@ from the old app on purpose or by accident).
 
 ## Not Built
 
-- **Windows executable and installer.** The eframe app has no packager yet;
-  `cargo run -p casemove-ui` is the only way to start it.
+- **Code signing and notarization.** `.github/workflows/release.yml` builds a
+  Windows zip, a Linux tarball and `.deb`, and a macOS `.app` zip for published
+  `v*` tags (ad-hoc signed only), and attaches them to the GitHub release.
+  Windows SmartScreen and macOS Gatekeeper will warn until a certificate and an
+  Apple Developer ID are wired in.
 - **Custom Windows titlebar** (minimize/maximize/close drawn by the app). The
   window uses native decorations.
 - **In-app self-update.** The status strip compares `CARGO_PKG_VERSION` with the
   latest GitHub release and opens the release page; it never downloads or
   installs. Live update checks also need a published `v*` release, which does
   not exist yet, so the banner cannot appear today.
-- **macOS and Linux packaging**, both Intel/Apple Silicon and generic Linux
-  (AppImage/deb), including signing and notarization.
+- **macOS Intel and Apple Silicon builds.** The release workflow builds only on
+  `macos-latest` (Apple Silicon); an Intel build needs a second matrix entry.
+- **AppImage and Windows installer.** Linux ships a tarball and `.deb`, Windows
+  a zip. An AppImage and an MSI/NSIS installer are still outstanding.
 - **Buff163 and Float prices.** Buff163 answers every data endpoint with
   `"请先登录"` (login required) and redirects its market pages to login, so
   there is no anonymous source to read; Float is likewise account-gated. Only

@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux window dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libssl-dev pkg-config
+      - run: cargo build --release -p casemove-ui
+      - name: Assemble tarball
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          stage="casemove-${version}-linux-x86_64"
+          mkdir -p "dist/${stage}/usr/bin" "dist/${stage}/usr/share/applications" \
+            "dist/${stage}/usr/share/icons/hicolor/256x256/apps"
+          install -m 755 target/release/casemove-ui "dist/${stage}/usr/bin/casemove"
+          install -m 644 assets/casemove.desktop \
+            "dist/${stage}/usr/share/applications/casemove.desktop"
+          install -m 644 assets/icons/256x256.png \
+            "dist/${stage}/usr/share/icons/hicolor/256x256/apps/casemove.png"
+          tar -C "dist/${stage}" -czf "dist/${stage}.tar.gz" .
+      - name: Build .deb
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          stage="casemove-${version}-linux-x86_64"
+          mkdir -p "dist/deb/DEBIAN"
+          cp -r "dist/${stage}/usr" "dist/deb/"
+          size=$(du -sk "dist/deb/usr" | cut -f1)
+          cat > dist/deb/DEBIAN/control <<EOF
+          Package: casemove
+          Version: ${version}
+          Architecture: amd64
+          Maintainer: Paul <PaulKotok98@gmail.com>
+          Installed-Size: ${size}
+          Section: utils
+          Priority: optional
+          Depends: libc6 (>= 2.34), libgcc-s1
+          Description: CS2 storage-unit and trade-up manager
+           Native desktop client for managing Counter-Strike 2 storage units,
+           trade-ups, and inventory pricing.
+          EOF
+          dpkg-deb --build --root-owner-group dist/deb "dist/casemove_${version}_amd64.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p casemove-ui
+      - name: Assemble zip
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $stage = "casemove-$version-windows-x64"
+          New-Item -ItemType Directory -Path "dist/$stage" -Force | Out-Null
+          Copy-Item target/release/casemove-ui.exe "dist/$stage/casemove.exe"
+          Copy-Item LICENSE "dist/$stage/LICENSE"
+          Compress-Archive -Path "dist/$stage/*" -DestinationPath "dist/$stage.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p casemove-ui
+      - name: Assemble .app bundle
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          app="dist/Casemove.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          install -m 755 target/release/casemove-ui "$app/Contents/MacOS/casemove"
+          cp assets/casemove.icns "$app/Contents/Resources/casemove.icns"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Casemove</string>
+            <key>CFBundleDisplayName</key><string>Casemove</string>
+            <key>CFBundleIdentifier</key><string>com.nombers.casemove</string>
+            <key>CFBundleVersion</key><string>${version}</string>
+            <key>CFBundleShortVersionString</key><string>${version}</string>
+            <key>CFBundleExecutable</key><string>casemove</string>
+            <key>CFBundleIconFile</key><string>casemove</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --keepParent "$app" "dist/casemove-${version}-macos-$(uname -m).zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+
+  publish:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -9,12 +9,14 @@ notes) is in [MISSING_FEATURES.md](MISSING_FEATURES.md).
 
 ## Application And Build
 
-- Windows executable and installer packaging for the eframe app.
 - Custom Windows titlebar and minimize/maximize/close controls.
 - Self-update download/install (the status strip compares the build with
   the latest GitHub release and opens the release page; no in-app installer).
-- Verify macOS Intel and Apple Silicon packaging.
-- Verify Linux packaging and native rendering behavior.
+- Code signing: a Windows certificate (SmartScreen) and a macOS Developer ID
+  (Gatekeeper) for the release artefacts.
+- Verify macOS Intel packaging (only Apple Silicon builds today) and Linux
+  packaging/rendering on a clean machine.
+- Windows installer (MSI/NSIS) and a Linux AppImage.
 
 ## Login And Accounts
 

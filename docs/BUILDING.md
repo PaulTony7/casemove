@@ -29,6 +29,23 @@ cargo clippy --workspace --all-targets
 The eframe app has not yet been packaged for distribution. Cross-platform
 packaging and signing are tracked in `MISSING_FEATURES.md`.
 
+## Releases
+
+`.github/workflows/release.yml` runs on `v*` tags (or manually) and attaches
+builds to the GitHub release:
+
+| Platform | Artefacts |
+|---|---|
+| Linux | `casemove-<version>-linux-x86_64.tar.gz` (FHS layout: `usr/bin`, icon, `.desktop`), `casemove_<version>_amd64.deb` |
+| Windows | `casemove-<version>-windows-x64.zip` (`casemove.exe` with embedded icon and version info, no console window) |
+| macOS | `casemove-<version>-macos-*.zip` containing `Casemove.app` |
+
+Release builds run the same pinned toolchain as CI. macOS bundles are ad-hoc
+signed (`codesign -s -`), so Gatekeeper still warns on first launch; Windows
+SmartScreen does the same until a signing certificate is configured. The in-app
+update check reads the latest release, so publishing a `v*` tag is also what
+makes the update banner appear.
+
 ## Inventory
 
 The app connects to the CS2 Game Coordinator automatically after sign-in; there

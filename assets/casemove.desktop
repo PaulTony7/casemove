@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Casemove
+Comment=CS2 storage-unit and trade-up manager
+Exec=casemove
+Icon=casemove
+Terminal=false
+Categories=Utility;Game;

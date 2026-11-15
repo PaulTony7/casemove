@@ -1,3 +1,12 @@
+//! Casemove: the native eframe/egui frontend over `app-core`.
+
+// Windows release builds are GUI apps; without this a console window opens
+// behind the main window. Debug builds keep the console for logs and panics.
+#![cfg_attr(
+    all(windows, not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod app;
 mod export;
 mod icons;
