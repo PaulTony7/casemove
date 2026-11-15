@@ -138,7 +138,9 @@ fn category_totals(rows: &[&GroupedItem], by: OverviewBy) -> Vec<f64> {
     let mut totals = vec![0.0; domain::CATEGORIES.len()];
     for row in rows {
         let category = row.representative.category.as_deref().unwrap_or("");
-        if let Some(slot) = domain::CATEGORIES.iter().position(|(value, _)| *value == category) {
+        // `InventoryItem.category` carries the display name (classify_category
+        // returns `CATEGORIES`' second element), not the path key.
+        if let Some(slot) = domain::CATEGORIES.iter().position(|(_, name)| *name == category) {
             totals[slot] += value_of(row, by);
         }
     }
@@ -797,9 +799,9 @@ mod tests {
     #[test]
     fn category_totals_skip_uncategorized_and_count_volume_for_every_row() {
         let mut skin = grouped("Skin", Some(10.0), 1, true, None);
-        skin.representative.category = Some("default_generated".into());
+        skin.representative.category = Some("Skins & Knives".into());
         let mut base = grouped("Base", None, 2, false, None);
-        base.representative.category = Some("default_generated".into());
+        base.representative.category = Some("Skins & Knives".into());
         let uncategorized = grouped("Odd", Some(99.0), 1, true, None);
         let rows = [&skin, &base, &uncategorized];
 
@@ -808,7 +810,7 @@ mod tests {
         let totals = category_totals(&rows, OverviewBy::Price);
         let slot = domain::CATEGORIES
             .iter()
-            .position(|(value, _)| *value == "default_generated")
+            .position(|(_, name)| *name == "Skins & Knives")
             .unwrap();
         assert_eq!(totals[slot], 10.0);
         assert_eq!(totals.iter().sum::<f64>(), 10.0);
