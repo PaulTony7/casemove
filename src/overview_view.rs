@@ -417,8 +417,8 @@ fn charts(ui: &mut egui::Ui, app: &mut CasemoveApp, data: &OverviewData) {
     let total_width = ui.available_width();
     let height = 300.0;
     let spacing = 10.0;
-    let margin = 16.0;
-    let usable = (total_width - spacing - 2.0 * margin).max(320.0);
+    // Two frames with 10px inner margins on each side plus the gap.
+    let usable = (total_width - spacing - 40.0).max(320.0);
     let bar_content = usable * 0.56;
     let pie_content = usable - bar_content;
 
@@ -620,24 +620,41 @@ fn paint_pie(painter: &egui::Painter, rect: egui::Rect, data: &OverviewData, by:
         pie_area.top() + pie_area.height() / 2.0,
     );
 
+    // Fills as one triangle fan per slice. A closed `PathShape` wedge with a
+    // stroke produces seam/spike artefacts at the centre and along the arc;
+    // explicit triangles keep every edge on the circle.
+    let mut mesh = egui::Mesh::default();
     let mut angle = -std::f32::consts::FRAC_PI_2;
     for (index, value) in &slices {
+        let (value_key, _) = domain::CATEGORIES[*index];
         let span = (value / total) as f32 * std::f32::consts::TAU;
-        let mut points = vec![center];
-        let steps = ((span / 0.12).ceil() as usize).clamp(2, 64);
+        let steps = ((span / 0.12).ceil() as usize).clamp(2, 128);
+        let fill = category_fill(value_key);
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(center, fill);
         for step in 0..=steps {
             let current = angle + span * step as f32 / steps as f32;
-            points.push(center + egui::vec2(current.cos(), current.sin()) * radius);
+            mesh.colored_vertex(
+                center + egui::vec2(current.cos(), current.sin()) * radius,
+                fill,
+            );
         }
-        let (value_key, _) = domain::CATEGORIES[*index];
-        let shape = egui::epaint::PathShape {
-            points,
-            closed: true,
-            fill: category_fill(value_key),
-            stroke: egui::Stroke::new(1.0_f32, category_border(value_key)).into(),
-        };
-        painter.add(shape);
+        for step in 0..steps as u32 {
+            mesh.add_triangle(base, base + 1 + step, base + 2 + step);
+        }
         angle += span;
+    }
+    painter.add(egui::Shape::mesh(mesh));
+
+    // Outline the rim and the slice boundaries without overdrawing the fills.
+    painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, theme::BORDER));
+    let mut edge = -std::f32::consts::FRAC_PI_2;
+    for (_, value) in &slices {
+        painter.line_segment(
+            [center, center + egui::vec2(edge.cos(), edge.sin()) * radius],
+            egui::Stroke::new(1.0_f32, theme::SEPARATOR),
+        );
+        edge += (value / total) as f32 * std::f32::consts::TAU;
     }
 
     let mut y = rect.top() + 24.0;
