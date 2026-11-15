@@ -418,20 +418,45 @@ fn items_section(
             Section::Storage => format!("Contents value: {}", pricing::format_usd(value)),
         };
 
-        table(
-            ui,
-            &mut app.images,
-            view,
-            &rows[start..end],
-            TableActions {
-                open_storage,
-                move_to,
-                clipboard,
-                show: section == Section::Inventory,
+        // Anchor the footer to the bottom and give the table only the space
+        // above it. Relying on max_scroll_height alone lets the table's
+        // scroll area extend over the footer and swallow its clicks.
+        let footer_height = 30.0;
+        let available = ui.available_rect_before_wrap();
+        let footer_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                available.left(),
+                (available.bottom() - footer_height).max(available.top()),
+            ),
+            available.max,
+        );
+        let table_rect = egui::Rect::from_min_max(
+            available.min,
+            egui::pos2(available.right(), footer_rect.top() - 6.0),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(table_rect),
+            |ui| {
+                table(
+                    ui,
+                    &mut app.images,
+                    view,
+                    &rows[start..end],
+                    TableActions {
+                        open_storage,
+                        move_to,
+                        clipboard,
+                        show: section == Section::Inventory,
+                    },
+                );
             },
         );
-        ui.add_space(6.0);
-        footer(ui, view, total, start, end, value_label);
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(footer_rect),
+            |ui| {
+                footer(ui, view, total, start, end, value_label);
+            },
+        );
     }
 
     if clear {
@@ -942,11 +967,9 @@ fn table(
 
     let width = ui.available_width();
     let total_frac: f32 = defs.iter().map(|def| def.frac).sum();
-    // `max_scroll_height` only constrains the body; the header and footer
-    // are outside it, so reserve both or the pagination row slides under the
-    // bottom status bar.
-    let table_height =
-        (ui.available_height() - theme::HEADER_HEIGHT - 26.0).max(160.0);
+    // `max_scroll_height` only constrains the body; the header is drawn
+    // above it inside the rect the caller reserved for the table.
+    let table_height = (ui.available_height() - theme::HEADER_HEIGHT - 2.0).max(120.0);
 
     let mut builder = egui_extras::TableBuilder::new(ui)
         .striped(true)
