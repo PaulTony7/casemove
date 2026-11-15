@@ -7,11 +7,13 @@ mod inventory;
 mod prices;
 mod schema;
 mod session;
+mod update;
 
 pub use accounts::initialize_store;
 pub use inventory::InventoryState;
 pub use prices::fetch_live_prices;
 pub use schema::SchemaRefreshReport;
+pub use update::{UpdateStatus, check as check_update};
 
 use app_commands::{SteamProfile, WalletInfo};
 use item_schema::ItemSchema;

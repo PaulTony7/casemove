@@ -9,6 +9,13 @@ pub enum Message {
         session: Result<Option<SteamProfile>, String>,
     },
     SchemaRefresh(Result<app_core::SchemaRefreshReport, String>),
+    /// Update check result (legacy `needUpdate-reply`).
+    Update(Result<app_core::UpdateStatus, String>),
+    /// Whether the Steam client is running (legacy `checkSteam`), with the
+    /// PID to close when the user asks for it (legacy `closeSteam`).
+    SteamRunning(Result<Option<u32>, String>),
+    /// Result of asking the OS to close the Steam client.
+    SteamClosed(Result<(), String>),
     InventoryMetadata(u64, Result<Option<InventorySnapshot>, String>),
     Accounts(Result<Vec<SavedAccount>, String>),
     Deleted(Result<Vec<SavedAccount>, String>),

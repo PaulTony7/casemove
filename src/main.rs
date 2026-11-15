@@ -8,6 +8,7 @@ mod login;
 mod messages;
 mod overview_view;
 mod settings_view;
+mod steam;
 mod storage_view;
 mod theme;
 mod tradeup_view;

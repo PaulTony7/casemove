@@ -31,6 +31,9 @@ pub struct LoginForm {
     pub qr_remember: bool,
 }
 
+/// Build version shown in the sidebar and compared against GitHub releases.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Bounds for the persisted UI scale.
 const MIN_ZOOM: f32 = 0.6;
 const MAX_ZOOM: f32 = 3.0;
@@ -103,6 +106,16 @@ impl Default for TradeUpState {
     }
 }
 
+/// State of the Steam-close prompt (legacy `closeSteamModal`).
+#[derive(Default, Clone)]
+pub struct SteamPrompt {
+    /// Steam's PID, when it could be read and can be closed.
+    pub pid: Option<u32>,
+    pub error: String,
+    pub dont_show: bool,
+    pub closing: bool,
+}
+
 pub struct CasemoveApp {
     pub core: Core,
     pub rt: tokio::runtime::Runtime,
@@ -139,6 +152,16 @@ pub struct CasemoveApp {
     pub trade_up_open: bool,
     pub trade_up: TradeUpState,
     pub trade_up_review: bool,
+    /// Latest release compared with this build (legacy `needUpdate`).
+    pub update: app_core::UpdateStatus,
+    /// Legacy "Steam is currently running" prompt, shown before a login only.
+    pub steam_prompt: Option<SteamPrompt>,
+    /// Whether this session already offered to close Steam (legacy
+    /// `hasAskedCloseSteam`).
+    pub steam_asked: bool,
+    pub steam_checking: bool,
+    /// Message from the last failed update check (legacy logged it).
+    pub update_error: String,
     /// Error to show inside the open review dialog.
     pub trade_up_dialog_error: Option<String>,
     pub overview_by: overview_view::OverviewBy,
@@ -147,6 +170,8 @@ pub struct CasemoveApp {
     pub currency: pricing::Currency,
     /// Legacy `steamLogin` preference: prompt to close Steam when it is open.
     pub show_steam_login: bool,
+    /// Legacy `devmode.value`: persisted only; legacy had no consumer either.
+    pub dev_mode: bool,
     /// Persisted sidebar width and the last inventory page.
     pub sidebar_width: f32,
     pub saved_page: usize,
@@ -230,6 +255,7 @@ impl CasemoveApp {
             .filter(|code| !code.trim().is_empty())
             .unwrap_or_else(|| "USD".to_owned());
         let show_steam_login = core.store_get::<bool>("steamLogin").unwrap_or(true);
+        let dev_mode = core.store_get::<bool>("devmode.value").unwrap_or(false);
         let zoom = core
             .store_get::<f32>("ui.zoom")
             .filter(|zoom| zoom.is_finite())
@@ -272,10 +298,16 @@ impl CasemoveApp {
             trade_up: TradeUpState::default(),
             trade_up_review: false,
             trade_up_dialog_error: None,
+            update: app_core::UpdateStatus::unchecked(APP_VERSION),
+            steam_prompt: None,
+            steam_asked: false,
+            steam_checking: false,
+            update_error: String::new(),
             overview_by,
             currency: pricing::Currency::new(&currency_code),
             currency_code,
             show_steam_login,
+            dev_mode,
             sidebar_width,
             saved_page,
             saved_columns: columns,
@@ -316,7 +348,19 @@ impl CasemoveApp {
             storage_majors: Vec::new(),
         };
         app.initial_load();
+        app.check_for_update();
         app
+    }
+
+    /// Legacy `needUpdate` on startup, with a manual re-check from the
+    /// status strip.
+    pub fn check_for_update(&mut self) {
+        self.update_error.clear();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = app_core::check_update(APP_VERSION).await;
+            reply.send(Message::Update(result));
+        });
     }
 
     fn initial_load(&mut self) {
@@ -568,6 +612,37 @@ impl CasemoveApp {
                     let _ = self.price_cache.save(&prices_cache_path());
                     self.apply_live_prices();
                 }
+            }
+            Message::Update(result) => match result {
+                Ok(status) => self.update = status,
+                Err(error) => self.update_error = error,
+            },
+            Message::SteamRunning(result) => {
+                self.steam_checking = false;
+                match result {
+                    Ok(pid) => {
+                        self.steam_prompt = Some(SteamPrompt {
+                            pid,
+                            ..Default::default()
+                        })
+                    }
+                    Err(error) => {
+                        self.login_error = error;
+                    }
+                }
+            }
+            Message::SteamClosed(result) => {
+                if let Some(prompt) = &mut self.steam_prompt {
+                    prompt.closing = false;
+                    if let Err(error) = result {
+                        prompt.error = error;
+                        return;
+                    }
+                }
+                // Legacy asked once whether to close Steam, then logged in
+                // regardless of the result.
+                self.steam_prompt = None;
+                self.submit_login();
             }
             Message::StorageAll(attempt, result) => {
                 self.storage_aggregate_busy = false;
@@ -985,6 +1060,15 @@ impl CasemoveApp {
         }));
     }
 
+    /// Persists the legacy dev-mode toggle (`devmode.value`).
+    pub fn set_dev_mode(&mut self, value: bool) {
+        self.dev_mode = value;
+        let core = self.core.clone();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("devmode.value", value);
+        }));
+    }
+
     /// Persists the Steam-close popup preference.
     pub fn save_steam_login(&self) {
         let core = self.core.clone();
@@ -1114,6 +1198,8 @@ impl CasemoveApp {
         self.qr_texture = None;
         self.qr_error.clear();
         self.form.show_secret = false;
+        self.steam_prompt = None;
+        self.steam_asked = false;
         self.login_error.clear();
         self.method = method;
     }
@@ -1155,6 +1241,18 @@ impl CasemoveApp {
 
     pub fn submit_login(&mut self) {
         if self.loading || self.login_busy || self.session_busy || self.profile.is_some() {
+            return;
+        }
+        // Legacy `loginForm.onSubmit`: before the first regular login of the
+        // session, offer to close a running Steam client when the
+        // `steamLogin` preference is on. QR/web-token logins skip the check.
+        if self.method == LoginMethod::Regular
+            && !self.steam_asked
+            && self.show_steam_login
+            && self.steam_prompt.is_none()
+        {
+            self.steam_asked = true;
+            self.check_steam();
             return;
         }
         match self.method {
@@ -1481,6 +1579,53 @@ impl CasemoveApp {
         });
     }
 
+    /// Legacy `checkSteam`: looks for a running Steam client and prompts.
+    pub fn check_steam(&mut self) {
+        self.steam_checking = true;
+        self.login_error.clear();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            reply.send(Message::SteamRunning(crate::steam::running().await));
+        });
+    }
+
+    /// Dismisses the prompt and drops the per-session latch, so a later
+    /// sign-in asks again (legacy remounted the login form).
+    pub fn dismiss_steam_prompt(&mut self) {
+        self.steam_prompt = None;
+        self.steam_asked = false;
+    }
+
+    /// Legacy "Dont show this again": clears the `steamLogin` preference.
+    pub fn forget_steam_prompt(&mut self) {
+        if self.show_steam_login {
+            self.show_steam_login = false;
+            self.save_steam_login();
+        }
+    }
+
+    /// Legacy `closeSteam`: asks the OS to terminate the Steam client.
+    pub fn close_steam(&mut self) {
+        let Some(prompt) = &mut self.steam_prompt else {
+            return;
+        };
+        let Some(pid) = prompt.pid else {
+            return;
+        };
+        prompt.closing = true;
+        prompt.error.clear();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            reply.send(Message::SteamClosed(crate::steam::close(pid).await));
+        });
+    }
+
+    /// Continues logging in without closing Steam.
+    pub fn login_without_closing_steam(&mut self) {
+        self.steam_prompt = None;
+        self.submit_login();
+    }
+
     pub fn rename_storage(&mut self) {
         let Some(dialog) = &mut self.rename_dialog else {
             return;
@@ -1672,6 +1817,90 @@ impl eframe::App for CasemoveApp {
         self.move_to_storage_dialog(ctx);
         self.rename_storage_dialog(ctx);
         self.trade_up_review_dialog(ctx);
+        self.steam_prompt_dialog(ctx);
+    }
+}
+
+// --- Steam-close prompt ----------------------------------------------------
+
+impl CasemoveApp {
+    fn steam_prompt_dialog(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.steam_prompt.clone() else {
+            return;
+        };
+        if !prompt.closing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.dismiss_steam_prompt();
+            return;
+        }
+        let mut close_and_login = false;
+        let mut login_only = false;
+        let mut cancel = false;
+        let mut dont_show = prompt.dont_show;
+        let can_close = prompt.pid.is_some() && !prompt.closing && !self.steam_checking;
+        egui::Modal::new(egui::Id::new("steam_running")).show(ctx, |ui| {
+            ui.set_min_width(440.0);
+            ui.label(egui::RichText::new("Steam is currently running").size(19.0).strong());
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(
+                    "You can continue to use the app, but it is recommended to close Steam as it \
+                     can otherwise require a restart of your pc before Valve allows you to \
+                     connect to VAC secured servers.",
+                )
+                .size(12.0)
+                .color(theme::TEXT),
+            );
+            if !prompt.error.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&prompt.error).size(12.0).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            ui.checkbox(&mut dont_show, "Dont show this again");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let close_button = egui::Button::new(
+                    egui::RichText::new(if prompt.closing {
+                        "Closing Steam..."
+                    } else {
+                        "Close and login"
+                    })
+                    .color(egui::Color32::WHITE),
+                )
+                .fill(egui::Color32::from_rgb(0x1f, 0x7f, 0x47));
+                if ui
+                    .add_enabled(can_close, close_button)
+                    .on_disabled_hover_text("Steam's process could not be identified")
+                    .clicked()
+                {
+                    close_and_login = true;
+                }
+                if ui
+                    .add_enabled(!prompt.closing, egui::Button::new("Login without closing"))
+                    .clicked()
+                {
+                    login_only = true;
+                }
+                if ui
+                    .add_enabled(!prompt.closing, egui::Button::new("Cancel"))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        if let Some(prompt) = &mut self.steam_prompt {
+            prompt.dont_show = dont_show;
+        }
+        if dont_show {
+            self.forget_steam_prompt();
+        }
+        if cancel {
+            self.dismiss_steam_prompt();
+        } else if close_and_login {
+            self.close_steam();
+        } else if login_only {
+            self.login_without_closing_steam();
+        }
     }
 }
 
@@ -1920,7 +2149,11 @@ impl CasemoveApp {
                         .size(12.0)
                         .color(theme::MUTED),
                 );
-                ui.label(egui::RichText::new("v0.1.0").size(10.0).color(theme::MUTED));
+                ui.label(
+                    egui::RichText::new(format!("v{APP_VERSION}"))
+                        .size(10.0)
+                        .color(theme::MUTED),
+                );
             });
             if self.profile.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1985,8 +2218,21 @@ impl CasemoveApp {
             if let Some(selection) = &self.storage_selection {
                 segment(ui, &format!("Unit: {}", selection.1), theme::STATUS_TEXT);
             }
+            if !self.update_error.is_empty() {
+                segment(ui, "Update check failed", theme::ERROR);
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let check = egui::RichText::new("Check for updates")
+                    .size(11.0)
+                    .color(theme::MUTED);
+                if ui
+                    .add(egui::Button::new(check).frame(false))
+                    .on_hover_text("Compares this build with the latest GitHub release")
+                    .clicked()
+                {
+                    self.check_for_update();
+                }
                 let balance = wallet_balance(self.wallet.clone());
                 if !balance.is_empty() {
                     ui.label(
@@ -1997,6 +2243,46 @@ impl CasemoveApp {
                 }
             });
         });
+        self.update_banner(ui);
+    }
+
+    /// "Update ready" strip, as legacy showed above the home content; the
+    /// download opens the release page instead of restarting an Electron
+    /// updater the native build does not have.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.update.available {
+            return;
+        }
+        let muted = self.update.latest.clone().unwrap_or_default();
+        egui::Frame::NONE
+            .fill(theme::RAISED)
+            .inner_margin(egui::Margin::symmetric(10, 3))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(egui_phosphor::regular::ARROW_CIRCLE_UP)
+                            .size(13.0)
+                            .color(theme::GREEN),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("Update {muted} is ready."))
+                            .size(11.0)
+                            .color(theme::TEXT),
+                    );
+                    if let Some(url) = self.update.download_url.clone()
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Download").size(11.0),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                });
+            });
     }
 
     // --- saved accounts ---------------------------------------------------

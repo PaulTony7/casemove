@@ -8,6 +8,7 @@ use eframe::egui;
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut currency = app.currency_code.clone();
     let mut steam_login = app.show_steam_login;
+    let mut dev_mode = app.dev_mode;
 
     egui::Frame::NONE
         .inner_margin(egui::Margin {
@@ -53,6 +54,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
                     ui.checkbox(&mut steam_login, "");
                 },
             );
+            row(
+                ui,
+                "Dev mode",
+                "Gives additional dev features (legacy kept this preference only).",
+                |ui| {
+                    ui.checkbox(&mut dev_mode, "");
+                },
+            );
         });
 
     if currency != app.currency_code {
@@ -61,6 +70,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     if steam_login != app.show_steam_login {
         app.show_steam_login = steam_login;
         app.save_steam_login();
+    }
+    if dev_mode != app.dev_mode {
+        app.set_dev_mode(dev_mode);
     }
 }
 

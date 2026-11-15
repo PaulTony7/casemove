@@ -67,6 +67,7 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         app.inventory_open = true;
         app.overview_open = false;
         app.storage_open = false;
+        app.trade_up_open = false;
         app.save_view("inventory");
     }
     ui.add_space(8.0);
@@ -136,6 +137,14 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
     if submit {
         app.submit_login();
+    }
+    if app.steam_checking {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("Checking for a running Steam client...")
+                .size(12.0)
+                .color(theme::MUTED),
+        );
     }
 
     ui.add_space(14.0);

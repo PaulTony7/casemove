@@ -46,7 +46,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 `casemove enrich:` line per login for diagnosis; the snapshot is retained for
 `steam_session` after a frontend reload.
 | `steam_retry_connection()` | `retryConnection` | `gamesPlayed([])` then `gamesPlayed([730])` | ☐ |
-| `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | Kill local Steam client (Windows only in legacy) | ☐ |
+| `check_steam() -> bool` / `close_steam() -> bool` | `check-steam` / `close-steam` (the only legacy `ipcMain.handle`) | `src/steam.rs` finds the client process (tasklist on Windows, `/proc` on Linux, `pgrep` on macOS) and terminates it; the login form prompts first, once per session, when `steamLogin` is on | ◐ |
 
 ### Inventory, storage units & items
 
@@ -80,7 +80,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 | `store_get_accounts() -> Vec<SavedAccount>` | `electron-store-getAccountDetails` + `-reply` | Ordered username/display-name/Steam-avatar metadata only; no secrets returned | ◐ |
 | `store_delete_account(username) -> Vec<SavedAccount>` | `electron-store-deleteAccountDetails` | Removes keyring token and canonical account metadata; rollback restores the previous token if metadata deletion fails | ◐ |
 | `store_set_account_position(username, index) -> Vec<SavedAccount>` | `electron-store-setAccountPosition` | Persists the canonical account order used by the saved-account sidebar | ◐ |
-| `check_update() -> UpdateInfo` | `needUpdate` + `needUpdate-reply` | Legacy caches a broken `gitHub` flag and replies `[false,…]` on error | ☐ |
+| `check_update() -> UpdateInfo` | `needUpdate` + `needUpdate-reply` | Compares `CARGO_PKG_VERSION` with the latest GitHub release (`app-core::update`); a 404 means no published release, other failures surface in the status strip | ◐ |
 
 ### Window
 

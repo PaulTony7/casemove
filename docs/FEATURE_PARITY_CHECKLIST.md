@@ -14,14 +14,15 @@ git history.
 - Windows executable and installer packaging for the eframe app (the Tauri
   MSI/NSIS path was removed in the native-UI pivot).
 - Custom Windows titlebar and minimize/maximize/close controls.
-- Update checks, update status, and restart/download workflow.
+- Self-update download/install (the status strip compares the build with
+  the latest GitHub release and opens the release page; no in-app installer).
 - Verify macOS Intel and Apple Silicon packaging.
 - Verify Linux packaging and native rendering behavior.
 
 ## Login And Accounts
 
-- Steam-client-open prompt and close/continue handling (the preference persists
-  and appears in Settings; the popup itself is missing).
+- Verify the Steam-close prompt on Windows (the prompt, "Close and login", and
+  the "Dont show this again" latch are ported).
 - Automatic Steam/GC reconnection and accurate connection-loss status.
 
 ## Inventory And Item Data
@@ -37,7 +38,7 @@ public CSGO-API dataset. Failed refreshes keep the last cached or bundled
 schema.
 
 **Recommended next feature:** Item/sticker image coverage and agent-specific
-enrichment, then trade-ups.
+enrichment.
 
 ## Operations
 
@@ -46,7 +47,8 @@ enrichment, then trade-ups.
 
 ## Preferences
 
-- Developer-mode controls.
+- Confirm whether dev mode should gain behavior (legacy persisted the switch
+  and never read it; Settings exposes it identically).
 
 ## Trade-Ups And Containers
 
