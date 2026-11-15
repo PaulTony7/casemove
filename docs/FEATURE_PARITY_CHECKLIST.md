@@ -50,11 +50,12 @@ enrichment, then trade-ups.
 
 ## Trade-Ups And Containers
 
-- Trade-up input picker and inventory/storage filters.
-- Outcome calculation, probabilities, and resulting floats.
-- Input costs, expected value, profit, and review UI.
-- Execute a trade-up contract and reconcile the result.
-- Container-opening operation; confirm intended legacy UI scope before porting.
+- Verify a live trade-up: the submitted contract, the GC ack, and the
+  resulting item appearing through inventory changes.
+- Verify the picker against a real inventory (collections from the bundled
+  `collections.json`, wear/StatTrak locks, storage-unit inputs).
+- Container-opening operation; confirm intended legacy UI scope before porting
+  (`open_container` payload is ported, no UI yet).
 
 ## Verification And Release Gates
 

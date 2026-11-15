@@ -386,6 +386,55 @@ impl InventoryClient {
         self.rename_storage_steam_vent(casket_id, name).await
     }
 
+    /// Submits a trade-up contract: the ten input item ids plus the input
+    /// rarity key (legacy `processTradeOrder`/`Language.Craft`). The GC
+    /// answers asynchronously through inventory changes, so no ack is awaited.
+    pub async fn craft(&self, item_ids: &[u64], rarity: u32) -> Result<(), InventoryError> {
+        if item_ids.is_empty() || item_ids.contains(&0) {
+            return Err(InventoryError::InvalidRequest);
+        }
+        let payload = craft_payload(item_ids, rarity);
+        if let Some(browser) = &self.browser {
+            return browser
+                .send_raw(EGCItemMsg::k_EMsgGCCraft as i32 as u32, &payload)
+                .await;
+        }
+        let coordinator = self
+            .coordinator
+            .as_ref()
+            .ok_or(InventoryError::ConnectionFailed)?;
+        coordinator
+            .send(CraftRequest {
+                item_ids: item_ids.to_vec(),
+                rarity,
+            })
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)
+    }
+
+    /// Opens a container/key pair (legacy `openContainer`/`Language.UnlockCrate`).
+    pub async fn open_container(&self, item_ids: &[u64]) -> Result<(), InventoryError> {
+        if item_ids.is_empty() || item_ids.contains(&0) {
+            return Err(InventoryError::InvalidRequest);
+        }
+        let payload = unlock_crate_payload(item_ids);
+        if let Some(browser) = &self.browser {
+            return browser
+                .send_raw(EGCItemMsg::k_EMsgGCUnlockCrate as i32 as u32, &payload)
+                .await;
+        }
+        let coordinator = self
+            .coordinator
+            .as_ref()
+            .ok_or(InventoryError::ConnectionFailed)?;
+        coordinator
+            .send(UnlockCrateRequest {
+                item_ids: item_ids.to_vec(),
+            })
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)
+    }
+
     async fn rename_storage_steam_vent(
         &self,
         casket_id: u64,
@@ -689,6 +738,18 @@ impl BrowserInventoryClient {
     }
 }
 
+impl BrowserInventoryClient {
+    /// Sends a raw (non-protobuf) GC message on the browser client.
+    async fn send_raw(&self, kind: u32, payload: &[u8]) -> Result<(), InventoryError> {
+        self.client
+            .lock()
+            .await
+            .send_to_gc(730, kind, payload)
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)
+    }
+}
+
 fn browser_casket_event(message: &GCMessage) -> Result<Option<CasketEvent>, InventoryError> {
     let event = match message.msg_type {
         kind if kind == ESOMsg::k_ESOMsg_Create as i32 as u32 => {
@@ -963,6 +1024,77 @@ impl steam_vent::message::EncodableMessage for NameItemRequest {
 impl NetMessage for NameItemRequest {
     type KindEnum = EGCItemMsg;
     const KIND: Self::KindEnum = EGCItemMsg::k_EMsgGCNameItem;
+}
+
+/// Legacy rarity byte for `Craft`, keyed by GC rarity.
+fn craft_rarity_key(rarity: u32) -> [u8; 4] {
+    match rarity {
+        0..=4 => [rarity as u8, 0, 0x0A, 0],
+        10..=14 => [(rarity - 6) as u8, 0, 0x0A, 0],
+        _ => [0, 0, 0x0A, 0],
+    }
+}
+
+/// Legacy `processTradeOrder` body: the rarity key, then the item ids.
+fn craft_payload(item_ids: &[u64], rarity: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(4 + item_ids.len() * 8);
+    body.extend_from_slice(&craft_rarity_key(rarity));
+    for id in item_ids {
+        body.extend_from_slice(&id.to_le_bytes());
+    }
+    body
+}
+
+/// Legacy `openContainer` body: eight zero bytes, then the item ids (the
+/// container and its key).
+fn unlock_crate_payload(item_ids: &[u64]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + item_ids.len() * 8);
+    body.extend_from_slice(&0u64.to_le_bytes());
+    for id in item_ids {
+        body.extend_from_slice(&id.to_le_bytes());
+    }
+    body
+}
+
+#[derive(Debug)]
+struct CraftRequest {
+    item_ids: Vec<u64>,
+    rarity: u32,
+}
+
+impl steam_vent::message::EncodableMessage for CraftRequest {
+    fn write_body<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        writer.write_all(&craft_payload(&self.item_ids, self.rarity))
+    }
+
+    fn encode_size(&self) -> usize {
+        4 + self.item_ids.len() * 8
+    }
+}
+
+impl NetMessage for CraftRequest {
+    type KindEnum = EGCItemMsg;
+    const KIND: Self::KindEnum = EGCItemMsg::k_EMsgGCCraft;
+}
+
+#[derive(Debug)]
+struct UnlockCrateRequest {
+    item_ids: Vec<u64>,
+}
+
+impl steam_vent::message::EncodableMessage for UnlockCrateRequest {
+    fn write_body<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        writer.write_all(&unlock_crate_payload(&self.item_ids))
+    }
+
+    fn encode_size(&self) -> usize {
+        8 + self.item_ids.len() * 8
+    }
+}
+
+impl NetMessage for UnlockCrateRequest {
+    type KindEnum = EGCItemMsg;
+    const KIND: Self::KindEnum = EGCItemMsg::k_EMsgGCUnlockCrate;
 }
 
 /// Local GC message wrappers with kinds; the proto crate provides
@@ -1448,6 +1580,28 @@ mod tests {
         );
         let failed = vec![Err(InventoryError::ConnectionFailed)];
         assert_eq!(run(failed, 1).await, Err(InventoryError::ConnectionFailed));
+    }
+
+    #[test]
+    fn craft_payload_matches_the_legacy_rarity_key_table() {
+        assert_eq!(craft_payload(&[], 0), [0x00, 0x00, 0x0A, 0x00]);
+        assert_eq!(craft_payload(&[], 4), [0x04, 0x00, 0x0A, 0x00]);
+        assert_eq!(craft_payload(&[], 10), [0x04, 0x00, 0x0A, 0x00]);
+        assert_eq!(craft_payload(&[], 13), [0x07, 0x00, 0x0A, 0x00]);
+        assert_eq!(craft_payload(&[], 14), [0x08, 0x00, 0x0A, 0x00]);
+        let payload = craft_payload(&[1, 0x0102_0304_0506_0708], 3);
+        assert_eq!(&payload[..4], &[0x03, 0x00, 0x0A, 0x00]);
+        assert_eq!(&payload[4..12], &1u64.to_le_bytes());
+        assert_eq!(&payload[12..], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+    }
+
+    #[test]
+    fn unlock_crate_payload_is_zero_prefixed_item_ids() {
+        let payload = unlock_crate_payload(&[1, 2]);
+        assert_eq!(&payload[..8], &[0; 8]);
+        assert_eq!(&payload[8..16], &1u64.to_le_bytes());
+        assert_eq!(&payload[16..], &2u64.to_le_bytes());
+        assert_eq!(payload.len(), 24);
     }
 
     #[test]

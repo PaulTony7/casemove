@@ -10,6 +10,7 @@ mod overview_view;
 mod settings_view;
 mod storage_view;
 mod theme;
+mod tradeup_view;
 
 use app_core::{AppEvent, Core, EventSink};
 use eframe::egui;

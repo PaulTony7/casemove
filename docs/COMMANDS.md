@@ -65,9 +65,9 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
-| `tradeup_possible_outcomes(items) -> Outcomes` | `getTradeUpPossible` + `-reply` | Prices enriched via `pricing:results` event, as legacy does | ☐ |
-| `tradeup_process(ids, rarity)` | `processTradeOrder` | Hand-ported `ByteBuffer` craft payload (`Language.Craft`) | ☐ |
-| `open_container(ids)` | `openContainer` | `Language.UnlockCrate` payload | ☐ |
+| `tradeup_possible_outcomes(items) -> Outcomes` | `getTradeUpPossible` + `-reply` | `domain::outcomes` over the bundled `backup/collections.json`: rarity skip, wear bucket, float, and hit-share percentage; outcomes are priced in-process | ◐ |
+| `tradeup_process(ids, rarity)` | `processTradeOrder` | Hand-ported craft payload (rarity key + ten LE u64 ids) sent as the raw `Craft` GC message; the GC reports the result through inventory changes | ◐ |
+| `open_container(ids)` | `openContainer` | `Language.UnlockCrate` payload (zero prefix + LE u64 ids) | ◐ |
 
 ### Pricing, currency & settings
 

@@ -48,6 +48,11 @@ pub enum Message {
         item_id: String,
         result: Result<(), String>,
     },
+    /// Result of submitting a trade-up contract.
+    TradeUpResult {
+        attempt: u64,
+        result: Result<(), String>,
+    },
     /// Result of renaming a storage unit.
     StorageRename {
         attempt: u64,

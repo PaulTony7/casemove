@@ -1,6 +1,8 @@
 use crate::images::{self, ImageCache};
 use crate::messages::{Message, Reply};
-use crate::{icons, inventory_view, login, overview_view, settings_view, storage_view, theme};
+use crate::{
+    icons, inventory_view, login, overview_view, settings_view, storage_view, theme, tradeup_view,
+};
 use app_commands::{
     BrowserTokenLoginParams, InventoryItem, InventorySnapshot, PasswordLoginParams, SavedAccount,
     SteamProfile, WalletInfo,
@@ -59,6 +61,48 @@ pub struct RenameDialog {
     pub error: String,
 }
 
+/// Trade-up page state: the contract inputs, picker filters, and the latest
+/// outcomes for the current selection (legacy `tradeUpReducer`).
+pub struct TradeUpState {
+    pub contract: domain::Contract,
+    /// Custom display names for candidate ids (search only, as legacy).
+    pub custom_names: std::collections::HashMap<String, String>,
+    pub outcomes: Vec<domain::Outcome>,
+    pub query: String,
+    pub min_float: f64,
+    pub max_float: f64,
+    pub hide_equipped: bool,
+    pub selected_collections: Vec<String>,
+    /// Snapshot of the filters the outcomes were computed with.
+    pub filter: domain::ContractFilter,
+    pub busy: bool,
+    pub error: String,
+    pub notice: String,
+    /// Eligible inputs; refreshed each frame from the inventory and loaded
+    /// storage units.
+    pub candidates: Vec<domain::CandidateItem>,
+}
+
+impl Default for TradeUpState {
+    fn default() -> Self {
+        Self {
+            contract: domain::Contract::default(),
+            custom_names: std::collections::HashMap::new(),
+            outcomes: Vec::new(),
+            query: String::new(),
+            min_float: 0.0,
+            max_float: 1.0,
+            hide_equipped: false,
+            selected_collections: Vec::new(),
+            filter: domain::ContractFilter::default(),
+            busy: false,
+            error: String::new(),
+            notice: String::new(),
+            candidates: Vec::new(),
+        }
+    }
+}
+
 pub struct CasemoveApp {
     pub core: Core,
     pub rt: tokio::runtime::Runtime,
@@ -92,6 +136,11 @@ pub struct CasemoveApp {
     pub overview_open: bool,
     pub storage_open: bool,
     pub settings_open: bool,
+    pub trade_up_open: bool,
+    pub trade_up: TradeUpState,
+    pub trade_up_review: bool,
+    /// Error to show inside the open review dialog.
+    pub trade_up_dialog_error: Option<String>,
     pub overview_by: overview_view::OverviewBy,
     /// Display currency (legacy `pricing.currency`, default `USD`).
     pub currency_code: String,
@@ -166,13 +215,14 @@ impl CasemoveApp {
             .store_get::<f32>("ui.sidebar")
             .unwrap_or(216.0)
             .clamp(184.0, 320.0);
-        let (inventory_open, overview_open, storage_open, settings_open) =
+        let (inventory_open, overview_open, storage_open, settings_open, trade_up_open) =
             match core.store_get::<String>("ui.view").as_deref() {
-                Some("inventory") => (true, false, false, false),
-                Some("overview") => (false, true, false, false),
-                Some("storage") => (false, false, true, false),
-                Some("settings") => (false, false, false, true),
-                _ => (false, false, false, false),
+                Some("inventory") => (true, false, false, false, false),
+                Some("overview") => (false, true, false, false, false),
+                Some("storage") => (false, false, true, false, false),
+                Some("settings") => (false, false, false, true, false),
+                Some("tradeup") => (false, false, false, false, true),
+                _ => (false, false, false, false, false),
             };
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
         let currency_code = core
@@ -218,6 +268,10 @@ impl CasemoveApp {
             overview_open,
             storage_open,
             settings_open,
+            trade_up_open,
+            trade_up: TradeUpState::default(),
+            trade_up_review: false,
+            trade_up_dialog_error: None,
             overview_by,
             currency: pricing::Currency::new(&currency_code),
             currency_code,
@@ -535,6 +589,30 @@ impl CasemoveApp {
                     }
                 }
             }
+            Message::TradeUpResult { attempt, result } => {
+                if attempt != self.attempt {
+                    return;
+                }
+                self.trade_up.busy = false;
+                match result {
+                    Ok(()) => {
+                        self.trade_up_review = false;
+                        self.trade_up.error.clear();
+                        self.trade_up.notice =
+                            "Trade-up submitted. The new item appears when the GC answers."
+                                .to_owned();
+                        self.trade_up.contract = domain::Contract::default();
+                        self.trade_up.outcomes.clear();
+                        self.trade_up.selected_collections.clear();
+                    }
+                    Err(error) => {
+                        self.trade_up.error = error.clone();
+                        if let Some(dialog) = &mut self.trade_up_dialog_error {
+                            dialog.clone_from(&error);
+                        }
+                    }
+                }
+            }
             Message::StorageMove {
                 attempt,
                 moved,
@@ -718,11 +796,48 @@ impl CasemoveApp {
             .collect();
         self.view.selected.retain(|id, _| present.contains(id));
         self.inventory = snapshot;
+        self.sync_trade_up_selection();
         // Contents may have changed with the new snapshot; reload on demand.
         self.storage_aggregate = None;
         self.storage_unit_contents.clear();
         self.storage_aggregate_error.clear();
         self.view.page = 0;
+    }
+
+    /// Rebuilds the eligible input list (legacy `tradeUpConfirmed` rows).
+    pub fn refresh_trade_up_candidates(&mut self) {
+        let mut candidates = Vec::new();
+        if let Some(snapshot) = &self.inventory {
+            candidates.extend(
+                snapshot
+                    .items
+                    .iter()
+                    .filter_map(tradeup_view::candidate_from),
+            );
+        }
+        for items in self.storage_unit_contents.values() {
+            candidates.extend(items.iter().filter_map(tradeup_view::candidate_from));
+        }
+        self.trade_up.candidates = candidates;
+    }
+
+    /// Keeps the contract in step with the inventory: inputs that vanish
+    /// (traded up, moved, sold) leave the contract and the outcomes refresh.
+    fn sync_trade_up_selection(&mut self) {
+        self.refresh_trade_up_candidates();
+        let Some(snapshot) = &self.inventory else {
+            return;
+        };
+        let present: std::collections::HashSet<&str> =
+            snapshot.items.iter().map(|item| item.id.as_str()).collect();
+        let before = self.trade_up.contract.items.len();
+        self.trade_up
+            .contract
+            .items
+            .retain(|item| present.contains(item.id.as_str()));
+        if self.trade_up.contract.items.len() != before || self.trade_up.outcomes.is_empty() {
+            self.recompute_trade_up();
+        }
     }
 
     fn apply_inventory_delta(
@@ -754,6 +869,7 @@ impl CasemoveApp {
             .sort_by_key(|item| (item.position, item.id.clone()));
         let snapshot = snapshot.clone();
         self.set_inventory(Some(snapshot));
+        self.sync_trade_up_selection();
         self.refresh_live_prices(false);
         true
     }
@@ -1305,6 +1421,66 @@ impl CasemoveApp {
         self.storage_notice.clear();
     }
 
+    /// Adds one picker row to the contract (legacy `tradeUpAddRemove`).
+    pub fn add_trade_up_candidate(
+        &mut self,
+        item: domain::CandidateItem,
+        custom_name: Option<String>,
+    ) {
+        let id = item.id.clone();
+        if self.trade_up.contract.contains(&id) {
+            return;
+        }
+        if let Some(name) = custom_name.filter(|name| !name.is_empty()) {
+            self.trade_up.custom_names.insert(id.clone(), name);
+        }
+        self.trade_up.contract.toggle(item);
+        self.recompute_trade_up();
+    }
+
+    pub fn remove_trade_up_item(&mut self, id: &str) {
+        self.trade_up.contract.remove(id);
+        self.recompute_trade_up();
+    }
+
+    /// Recomputes the possible outcomes (legacy recomputed them whenever the
+    /// input count changed).
+    fn recompute_trade_up(&mut self) {
+        let inputs: Vec<(String, Option<f64>)> = self
+            .trade_up
+            .contract
+            .items
+            .iter()
+            .map(|item| (item.name.clone(), item.wear))
+            .collect();
+        self.trade_up.outcomes = domain::outcomes(&inputs).unwrap_or_default();
+        self.trade_up.notice.clear();
+    }
+
+    /// Submits the contract to the GC.
+    pub fn submit_trade_up(&mut self) {
+        if self.trade_up.busy || !self.trade_up.contract.is_full() {
+            return;
+        }
+        self.trade_up.busy = true;
+        self.trade_up.error.clear();
+        self.trade_up_dialog_error = None;
+        let ids: Vec<String> = self
+            .trade_up
+            .contract
+            .items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        let attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = core.craft_trade_up(ids).await;
+            reply.send(Message::TradeUpResult { attempt, result });
+        });
+    }
+
     pub fn rename_storage(&mut self) {
         let Some(dialog) = &mut self.rename_dialog else {
             return;
@@ -1452,8 +1628,11 @@ impl eframe::App for CasemoveApp {
 
         // The account list belongs to the home/login screen; a restored page
         // is only shown while signed in, so mirror the central panel.
-        let on_page =
-            self.profile.is_some() && (self.inventory_open || self.overview_open || self.storage_open);
+        let on_page = self.profile.is_some()
+            && (self.inventory_open
+                || self.overview_open
+                || self.storage_open
+                || self.trade_up_open);
         if !on_page {
             egui::SidePanel::right("saved-accounts")
                 .resizable(false)
@@ -1480,6 +1659,8 @@ impl eframe::App for CasemoveApp {
                     inventory_view::show(ui, self);
                 } else if self.storage_open && self.profile.is_some() {
                     storage_view::show(ui, self);
+                } else if self.trade_up_open && self.profile.is_some() {
+                    tradeup_view::show(ui, self);
                 } else if self.settings_open {
                     settings_view::show(ui, self);
                 } else {
@@ -1490,6 +1671,140 @@ impl eframe::App for CasemoveApp {
         self.removal_dialog(ctx);
         self.move_to_storage_dialog(ctx);
         self.rename_storage_dialog(ctx);
+        self.trade_up_review_dialog(ctx);
+    }
+}
+
+// --- trade-up review -------------------------------------------------------
+
+impl CasemoveApp {
+    fn trade_up_review_dialog(&mut self, ctx: &egui::Context) {
+        if !self.trade_up_review {
+            return;
+        }
+        if !self.trade_up.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.trade_up_review = false;
+            return;
+        }
+        let busy = self.trade_up.busy;
+        let items: Vec<domain::CandidateItem> = self.trade_up.contract.items.clone();
+        let total: f64 = items.iter().map(|item| item.price.unwrap_or(0.0)).sum();
+        let expected: f64 = self
+            .trade_up
+            .outcomes
+            .iter()
+            .map(|outcome| {
+                pricing::resolve(
+                    &outcome.name,
+                    Some(outcome.wear_name),
+                    pricing::PriceSource::SteamListing,
+                    None,
+                )
+                .unwrap_or(0.0)
+                    * (outcome.percentage / 100.0)
+            })
+            .sum();
+        let mut confirm = false;
+        let mut cancel = false;
+        let images = &mut self.images;
+        let images = &mut *images;
+        let average = self.trade_up.contract.average_wear();
+        let currency = self.currency.clone();
+        let money = |amount: f64| pricing::format_currency(&currency, amount, 2);
+        let error = self.trade_up_dialog_error.clone().unwrap_or_default();
+        egui::Modal::new(egui::Id::new("trade_up_review")).show(ctx, |ui| {
+            ui.set_min_width(520.0);
+            ui.label(egui::RichText::new("Review trade-up").size(19.0).strong());
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} items · average float {:.9}",
+                    items.len(),
+                    average
+                ))
+                .size(12.0)
+                .color(theme::MUTED),
+            );
+            if !error.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&error).size(12.0).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                for item in &items {
+                    ui.horizontal(|ui| {
+                        images::media_box(
+                            ui,
+                            images,
+                            item.image_url.as_deref(),
+                            egui::vec2(34.0, 24.0),
+                            egui::CornerRadius::same(3),
+                            egui_phosphor::regular::CUBE,
+                            12.0,
+                            theme::ICON,
+                        );
+                        ui.label(egui::RichText::new(&item.name).size(theme::BODY_SIZE));
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        item.price.map(&money).unwrap_or_default(),
+                                    )
+                                    .size(theme::MUTED_SIZE)
+                                    .color(theme::MUTED),
+                                );
+                                ui.label(
+                                    egui::RichText::new(
+                                        item.wear.map(|wear| format!("{wear:.6}")).unwrap_or_default(),
+                                    )
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(theme::MUTED),
+                                );
+                            },
+                        );
+                    });
+                }
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Cost {}", money(total)))
+                        .size(12.0)
+                        .color(theme::ERROR_STRONG),
+                );
+                ui.label(
+                    egui::RichText::new(format!("Expected value {}", money(expected)))
+                        .size(12.0)
+                        .color(theme::GREEN),
+                );
+            });
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let confirm_button = egui::Button::new(
+                    egui::RichText::new(if busy { "Submitting..." } else { "Confirm trade-up" })
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::ACCENT);
+                if ui
+                    .add_enabled(!busy && items.len() == domain::Contract::CAPACITY, confirm_button)
+                    .clicked()
+                {
+                    confirm = true;
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Cancel"))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        if cancel {
+            self.trade_up_review = false;
+        } else if confirm {
+            self.submit_trade_up();
+        }
     }
 }
 
@@ -1512,6 +1827,8 @@ impl CasemoveApp {
                 self.inventory_open = false;
                 self.overview_open = false;
                 self.storage_open = false;
+                self.trade_up_open = false;
+                self.settings_open = false;
             }
         });
         ui.add_space(16.0);
@@ -1540,10 +1857,15 @@ impl CasemoveApp {
         });
         ui.add_space(16.0);
 
-        let nav: [(&str, &str, &'static str); 4] = [
+        let nav: [(&str, &str, &'static str); 5] = [
             ("Overview", egui_phosphor::regular::CHART_LINE, "overview"),
             ("Inventory", egui_phosphor::regular::ARCHIVE, "inventory"),
             ("Storage", egui_phosphor::regular::VAULT, "storage"),
+            (
+                "Trade-ups",
+                egui_phosphor::regular::ARROWS_CLOCKWISE,
+                "tradeup",
+            ),
             ("Settings", egui_phosphor::regular::GEAR, "settings"),
         ];
         let width = ui.available_width();
@@ -1552,6 +1874,7 @@ impl CasemoveApp {
                 "overview" => self.overview_open,
                 "inventory" => self.inventory_open,
                 "storage" => self.storage_open,
+                "tradeup" => self.trade_up_open,
                 _ => self.settings_open,
             };
             // Settings only needs a local preference store, not a session.
@@ -1570,6 +1893,7 @@ impl CasemoveApp {
                 self.inventory_open = key == "inventory";
                 self.storage_open = key == "storage";
                 self.settings_open = key == "settings";
+                self.trade_up_open = key == "tradeup";
                 self.save_view(key);
             }
             if response.hovered() && !enabled {

@@ -346,6 +346,18 @@ fn enrich_item(item: EconItem, schema: &ItemSchema) -> InventoryItem {
     }
 }
 
+/// Legacy `itemProcessors` trade-up gate for an enriched row: Covert items,
+/// knives, Souvenirs, and non-skins are never trade-up inputs.
+fn valid_trade_up_input(row: &InventoryItem) -> bool {
+    let quality = if row.name.starts_with('★') { 3 } else { 0 };
+    domain::is_trade_up_skin(
+        &row.name,
+        row.rarity,
+        quality,
+        row.image_path.as_deref(),
+    ) && !row.is_storage_unit
+}
+
 /// Converts GC items into inventory rows, applying the legacy conversion
 /// filters. `include_casket` keeps items contained in storage units, which the
 /// storage-contents view needs but the main inventory must hide.
@@ -363,7 +375,11 @@ fn to_rows(
             continue;
         }
         if is_owned_item(&item)? {
-            rows.push(enrich_item(item, schema));
+            let mut row = enrich_item(item, schema);
+            // Legacy `getTradeUp`: collection eligibility comes from the
+            // bundled trade-up snapshot, not the live schema.
+            row.trade_up_eligible = domain::Collections::bundled().is_eligible(&row.name);
+            rows.push(row);
         }
     }
     Ok(rows)
@@ -671,6 +687,75 @@ impl Core {
                     .rename_storage(casket, &name)
                     .await
                     .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    /// Submits a trade-up contract of exactly ten owned skins, all of the
+    /// same GC rarity and StatTrak state (legacy `processTradeOrder`). The GC
+    /// reports the result through inventory changes, so success here only
+    /// means the request was accepted for sending.
+    pub async fn craft_trade_up(&self, item_ids: Vec<String>) -> Result<(), String> {
+        if item_ids.len() != 10 {
+            return Err("Select ten items to trade up.".to_owned());
+        }
+        let ids: Vec<u64> = item_ids
+            .iter()
+            .map(|id| parse_storage_id(id).map_err(|_| "Invalid item ID.".to_owned()))
+            .collect::<Result<_, _>>()?;
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != ids.len() {
+            return Err("Each item can only be used once.".to_owned());
+        }
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = self.schema_snapshot()?;
+        session
+            .with_connection(|_connection, generation| async move {
+                let state = inventory.0.try_lock().map_err(|_| {
+                    "An inventory or storage request is already in progress.".to_owned()
+                })?;
+                let slot = state
+                    .as_ref()
+                    .filter(|slot| slot.generation == generation)
+                    .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+                let mut rarity = None;
+                let mut stat_trak = None;
+                for id in &ids {
+                    let item = slot
+                        .items
+                        .iter()
+                        .find(|item| item.id == *id)
+                        .ok_or_else(|| "One of the selected items is not in the inventory.".to_owned())?;
+                    let row = enrich_item(item.clone(), &schema);
+                    if !valid_trade_up_input(&row) {
+                        return Err(format!("{} cannot be used in a trade-up.", row.name));
+                    }
+                    if rarity.is_some_and(|rarity| rarity != item.rarity)
+                        || stat_trak.is_some_and(|stat_trak| stat_trak != row.stat_trak)
+                    {
+                        return Err(
+                            "All ten items must share the same rarity and StatTrak state."
+                                .to_owned(),
+                        );
+                    }
+                    rarity = Some(item.rarity);
+                    stat_trak = Some(row.stat_trak);
+                }
+                let client = slot.client.as_ref().ok_or_else(|| {
+                    "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                        .to_owned()
+                })?;
+                client
+                    .craft(&ids, rarity.unwrap_or_default())
+                    .await
+                    .map_err(|error| match error {
+                        InventoryError::InvalidRequest => "Invalid trade-up request.".to_owned(),
+                        error => error.to_string(),
+                    })
             })
             .await
             .map_err(|error| error.to_string())?
