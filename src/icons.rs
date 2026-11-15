@@ -2,7 +2,7 @@ use eframe::egui;
 
 /// Window icon for the OS titlebar/decorations.
 pub fn window_icon() -> Option<egui::IconData> {
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/32x32.png")).ok()?;
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/casemove.png")).ok()?;
     let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
     let width = image.width();
     let height = image.height();
