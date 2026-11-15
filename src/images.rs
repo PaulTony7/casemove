@@ -135,6 +135,53 @@ pub fn media_box(
     }
 }
 
+/// Thumbnails shared by the table: url -> texture (`None` while loading).
+static THUMBNAILS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, Option<egui::TextureHandle>>>,
+> = std::sync::OnceLock::new();
+
+fn thumbnails() -> &'static std::sync::Mutex<HashMap<String, Option<egui::TextureHandle>>> {
+    THUMBNAILS.get_or_init(Default::default)
+}
+
+/// A texture for `url` if its fetch has finished, otherwise `None`.
+///
+/// Rows only hold `&Context`, so they read this cache and start a fetch on
+/// first sight instead of waiting on `ImageCache`'s channel round-trip.
+pub fn cached(url: &str) -> Option<egui::TextureHandle> {
+    thumbnails()
+        .lock()
+        .ok()
+        .and_then(|textures| textures.get(url).cloned().flatten())
+}
+
+/// Downloads and decodes `url` off-thread, then publishes the texture to
+/// [`cached`]. Called at least once per visible row; only the first call for
+/// a URL does work.
+pub fn prefetch(rt: &Handle, ctx: &egui::Context, url: &str) {
+    let Some(mut textures) = thumbnails().lock().ok() else {
+        return;
+    };
+    if textures.contains_key(url) {
+        return;
+    }
+    textures.insert(url.to_owned(), None);
+    drop(textures);
+
+    let url = url.to_owned();
+    let ctx = ctx.clone();
+    rt.spawn(async move {
+        let texture = match fetch_image(&url).await {
+            Ok(image) => Some(ctx.load_texture(url.clone(), image, egui::TextureOptions::LINEAR)),
+            Err(()) => None,
+        };
+        if let Ok(mut textures) = thumbnails().lock() {
+            textures.insert(url, texture);
+        }
+        ctx.request_repaint();
+    });
+}
+
 /// Round profile avatar (sidebar, session details, saved accounts).
 pub fn avatar(ui: &mut egui::Ui, cache: &mut ImageCache, url: Option<&str>, size: f32) {
     media_box(

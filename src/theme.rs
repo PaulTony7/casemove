@@ -15,6 +15,10 @@ pub const STATUS_TEXT: egui::Color32 = egui::Color32::from_rgb(0xb6, 0xb5, 0xba)
 pub const ICON: egui::Color32 = egui::Color32::from_rgb(0xc5, 0xc6, 0xca);
 pub const CHIP_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0x3b, 0x82, 0xf6);
 pub const DANGER: egui::Color32 = egui::Color32::from_rgb(0xb9, 0x1c, 0x1c);
+/// Row selection wash and the filter-button "active" fill.
+pub const SELECTED_ROW: egui::Color32 = egui::Color32::from_rgb(0x1e, 0x20, 0x33);
+/// Metadata badges (StatTrak, unit markers).
+pub const BADGE_GOLD: egui::Color32 = egui::Color32::from_rgb(0xd6, 0xc1, 0x8a);
 
 // Density tokens: one place to tune how much fits on screen.
 pub const PAGE_MARGIN: i8 = 16;

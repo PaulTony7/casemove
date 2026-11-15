@@ -180,13 +180,13 @@ fn overview_data(app: &CasemoveApp) -> OverviewData {
         })
         .unwrap_or(0.0);
 
-    let visible = inventory_view::visible_rows(&app.grouped, &app.view);
+    let visible = inventory_view::filtered_rows(&app.grouped, &app.view);
     let storage_grouped = app
         .storage_aggregate
         .as_ref()
         .map(|items| inventory::group_items(items.clone()))
         .unwrap_or_default();
-    let storage_visible = inventory_view::visible_rows(&storage_grouped, &app.view);
+    let storage_visible = inventory_view::filtered_rows(&storage_grouped, &app.view);
 
     let bars = bar_points(&visible, &storage_visible, app.overview_by);
     let mut categories = category_totals(&visible, app.overview_by);

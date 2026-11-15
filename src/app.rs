@@ -34,6 +34,30 @@ pub struct LoginForm {
 /// Build version shown in the sidebar and compared against GitHub releases.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Column sets for both tables plus the inventory sort, from the store.
+/// Saved data from the pre-overhaul layout (`ui.columns` as a flag struct)
+/// no longer deserializes, so it falls back to the defaults.
+fn load_columns(
+    core: &app_core::Core,
+) -> (
+    inventory_view::ColumnSet,
+    inventory_view::ColumnSet,
+    inventory_view::SortKey,
+    bool,
+) {
+    let inventory = core
+        .store_get::<inventory_view::ColumnSet>("ui.columns.inventory")
+        .unwrap_or_default();
+    let storage = core
+        .store_get::<inventory_view::ColumnSet>("ui.columns.storage")
+        .unwrap_or_default();
+    let sort = core
+        .store_get::<inventory_view::SortKey>("ui.sort")
+        .unwrap_or_default();
+    let sort_desc = core.store_get::<bool>("ui.sortDesc").unwrap_or(false);
+    (inventory, storage, sort, sort_desc)
+}
+
 /// Bounds for the persisted UI scale.
 const MIN_ZOOM: f32 = 0.6;
 const MAX_ZOOM: f32 = 3.0;
@@ -187,11 +211,8 @@ pub struct CasemoveApp {
     pub show_steam_login: bool,
     /// Legacy `devmode.value`: persisted only; legacy had no consumer either.
     pub dev_mode: bool,
-    /// Persisted sidebar width and the last inventory page.
+    /// Persisted sidebar width and the storage-contents batch size.
     pub sidebar_width: f32,
-    pub saved_page: usize,
-    /// Last persisted table columns, so changes are saved once each.
-    pub saved_columns: inventory_view::Columns,
     /// Last persisted UI scale, so zooming is written once it settles.
     pub saved_zoom: f32,
     /// Account row currently being dragged to reorder the saved list.
@@ -203,6 +224,7 @@ pub struct CasemoveApp {
     pub majors: Vec<String>,
     pub inventory_busy: bool,
     pub inventory_error: String,
+    #[allow(dead_code)]
     pub schema_notice: String,
     pub storage_selection: Option<(String, String)>,
     pub storage_contents: Option<Vec<InventoryItem>>,
@@ -255,11 +277,22 @@ impl CasemoveApp {
             .store_get::<f32>("ui.sidebar")
             .unwrap_or(216.0)
             .clamp(184.0, 320.0);
-        // Like legacy `/` → `/stats`: a session starts on the dashboard and
-        // no session shows the sign-in page.
+        // Reopen the last page, defaulting to the dashboard (`/stats`).
+        let saved_view = core
+            .store_get::<String>("ui.view")
+            .unwrap_or_else(|| "overview".to_owned());
         let (inventory_open, overview_open, storage_open, settings_open, trade_up_open) =
-            (false, true, false, false, false);
-        let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
+            match saved_view.as_str() {
+                "inventory" => (true, false, false, false, false),
+                "storage" => (false, false, true, false, false),
+                "settings" => (false, false, false, true, false),
+                "tradeup" => (false, false, false, false, true),
+                _ => (false, true, false, false, false),
+            };
+        let saved_limit = core
+            .store_get::<usize>("ui.storage.limit")
+            .unwrap_or(inventory_view::BATCH)
+            .max(inventory_view::BATCH);
         let currency_code = core
             .store_get::<String>("pricing.currency")
             .filter(|code| !code.trim().is_empty())
@@ -272,9 +305,7 @@ impl CasemoveApp {
             .unwrap_or(1.0)
             .clamp(MIN_ZOOM, MAX_ZOOM);
         cc.egui_ctx.options_mut(|options| options.zoom_factor = zoom);
-        let columns = core
-            .store_get::<inventory_view::Columns>("ui.columns")
-            .unwrap_or_default();
+        let (inventory_columns, storage_columns, sort, sort_desc) = load_columns(&core);
         let mut app = Self {
             core,
             rt,
@@ -322,8 +353,6 @@ impl CasemoveApp {
             show_steam_login,
             dev_mode,
             sidebar_width,
-            saved_page,
-            saved_columns: columns,
             saved_zoom: zoom,
             drag_account: None,
             inventory: None,
@@ -352,11 +381,16 @@ impl CasemoveApp {
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
             view: inventory_view::InventoryViewState {
-                page: saved_page,
-                columns,
+                columns: inventory_columns,
+                sort,
+                sort_desc,
                 ..Default::default()
             },
-            storage_view: inventory_view::InventoryViewState::default(),
+            storage_view: inventory_view::InventoryViewState {
+                columns: storage_columns,
+                limit: saved_limit,
+                ..Default::default()
+            },
             storage_grouped: Vec::new(),
             storage_majors: Vec::new(),
         };
@@ -471,21 +505,7 @@ impl CasemoveApp {
                 }
             }
             Message::SchemaRefresh(result) => match result {
-                Ok(report) => {
-                    self.schema_notice = if report.cache_used {
-                        "Using recently refreshed cached item and sticker data.".into()
-                    } else if report.warnings.is_empty() {
-                        format!(
-                            "Item data refreshed; {} image entries are available.",
-                            report.image_entries
-                        )
-                    } else {
-                        format!(
-                            "Item data refreshed with {} image entries. {}",
-                            report.image_entries,
-                            report.warnings.join(" ")
-                        )
-                    };
+                Ok(_report) => {
                     if self.inventory.is_some() && self.storage_selection.is_none() {
                         let core = self.core.clone();
                         let reply = self.reply.clone();
@@ -499,7 +519,7 @@ impl CasemoveApp {
                     }
                 }
                 Err(error) => {
-                    self.schema_notice = format!(
+                    self.inventory_error = format!(
                         "Could not refresh item data; cached or bundled data remains active. {error}"
                     );
                 }
@@ -943,7 +963,6 @@ impl CasemoveApp {
         self.storage_aggregate = None;
         self.storage_unit_contents.clear();
         self.storage_aggregate_error.clear();
-        self.view.page = 0;
     }
 
     /// Rebuilds the eligible input list (legacy `tradeUpConfirmed` rows).
@@ -1203,15 +1222,17 @@ impl CasemoveApp {
         };
     }
 
-    /// Persists the visible table columns so they survive a restart.
-    pub fn save_columns(&self) {
+    /// Persists the visible columns of one table so they survive restarts.
+    pub fn save_columns(&self, table: inventory_view::TableId, columns: &inventory_view::ColumnSet) {
         let core = self.core.clone();
-        let columns = self.view.columns;
+        let key = format!("ui.columns.{}", table.store_key());
+        let columns = columns.clone();
         drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("ui.columns", columns);
+            let _ = core.store_set(&key, columns);
         }));
     }
 
+    /// Persists the UI scale so zoom survives a restart.
     /// Persists the UI scale so zoom survives a restart.
     pub fn save_zoom(&self, zoom: f32) {
         let core = self.core.clone();
@@ -1220,12 +1241,20 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists the inventory table's page.
-    pub fn save_page(&self) {
+    /// Persists the open page so a restart lands where the user left off.
+    pub fn save_view(&self, view: &'static str) {
         let core = self.core.clone();
-        let page = self.view.page;
         drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("ui.page", page);
+            let _ = core.store_set("ui.view", view);
+        }));
+    }
+
+    /// Persists how many storage-contents rows are currently loaded.
+    pub fn save_limited(&self) {
+        let core = self.core.clone();
+        let limit = self.storage_view.limit;
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.storage.limit", limit);
         }));
     }
 
@@ -2357,6 +2386,7 @@ impl CasemoveApp {
                 self.storage_open = key == "storage";
                 self.settings_open = key == "settings";
                 self.trade_up_open = key == "tradeup";
+                self.save_view(key);
             }
             if response.hovered() && !enabled {
                 let tip = if self.profile.is_none() {

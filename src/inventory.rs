@@ -1,7 +1,6 @@
 use app_commands::InventoryItem;
 use std::collections::HashSet;
 
-pub const PAGE_SIZE: usize = 50;
 /// Legacy storage units hold 1000 items (`1000 - item_storage_total`).
 pub const STORAGE_CAPACITY: usize = 1000;
 
