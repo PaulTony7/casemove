@@ -932,7 +932,10 @@ impl eframe::App for CasemoveApp {
             .show(ctx, |ui| self.sidebar(ui));
         self.persist_sidebar_width(sidebar.response.rect.width(), ctx);
 
-        if !self.inventory_open && !self.overview_open {
+        // The account list belongs to the home/login screen; a restored page
+        // is only shown while signed in, so mirror the central panel.
+        let on_page = self.profile.is_some() && (self.inventory_open || self.overview_open);
+        if !on_page {
             egui::SidePanel::right("saved-accounts")
                 .resizable(false)
                 .exact_width(272.0)
