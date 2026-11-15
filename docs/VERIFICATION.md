@@ -89,8 +89,14 @@ Needs: a second machine or a second session that can displace the first.
 
 ## 6. Price sources
 
-- [ ] **safe** Switch the source from the inventory bar and from Settings: the
-      choice persists across restart and reloads prices from that market.
+- [ ] **safe** Switch the source from the header picker on Inventory, Overview,
+      Storage, and Trade-ups, and from Settings: it moves to the same place in
+      every header, the choice persists across restart, and the totals and
+      per-row prices change to that market straight away without pressing
+      Refresh.
+- [ ] **safe** Switch the source twice in quick succession while the first fetch
+      is still running: the final selection wins and no prices from the skipped
+      market are stored.
 - [ ] **safe** For 5 items, compare the Steam, Skinport, and CSFloat figures with
       the sites themselves (CSFloat quotes its lowest listing, the others a
       median sale price).

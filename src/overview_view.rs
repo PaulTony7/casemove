@@ -262,6 +262,7 @@ fn greeting() -> &'static str {
 }
 
 fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
+    let mut chosen_market = None;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(
@@ -298,6 +299,9 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(market) = crate::price_source::show(ui, app) {
+                chosen_market = Some(market);
+            }
             let text = if app.storage_aggregate_busy {
                 "Loading…".to_owned()
             } else if app.storage_aggregate.is_some() {
@@ -322,6 +326,7 @@ fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, load: &mut bool) {
             }
         });
     });
+    crate::price_source::apply(app, chosen_market);
 }
 
 fn cards(ui: &mut egui::Ui, data: &OverviewData, currency: &pricing::Currency) {

@@ -675,16 +675,19 @@ impl CasemoveApp {
                     self.storage_busy = false;
                 }
             }
-            Message::LivePrices(prices) => {
-                self.prices_busy = false;
-                if !prices.is_empty() {
-                    let now = now_ms();
-                    let market = self.price_market;
-                    for (key, price) in prices {
-                        self.price_cache.insert(&key, market, price, now);
+            Message::LivePrices(market, prices) => {
+                // A fetch for a market the user has since left is dropped; its
+                // prices must not be filed under the newly selected one.
+                if market == self.price_market {
+                    self.prices_busy = false;
+                    if !prices.is_empty() {
+                        let now = now_ms();
+                        for (key, price) in prices {
+                            self.price_cache.insert(&key, market, price, now);
+                        }
+                        let _ = self.price_cache.save(&prices_cache_path());
+                        self.apply_live_prices();
                     }
-                    let _ = self.price_cache.save(&prices_cache_path());
-                    self.apply_live_prices();
                 }
             }
             Message::Update(result) => match result {
@@ -1098,6 +1101,7 @@ impl CasemoveApp {
         let market = self.price_market;
         self.rt.spawn(async move {
             reply.send(Message::LivePrices(
+                market,
                 app_core::fetch_market_prices(market, keys).await,
             ));
         });
@@ -1210,6 +1214,12 @@ impl CasemoveApp {
         drop(self.rt.spawn_blocking(move || {
             let _ = core.store_set("pricing.market", value);
         }));
+        // Show the new market's cached quotes at once, then fetch whatever it
+        // is missing. A refresh already in flight belongs to the old market,
+        // so it is cleared for the new one to start on its own.
+        self.apply_live_prices();
+        self.prices_busy = false;
+        self.refresh_live_prices(false);
     }
 
     /// Formats a USD amount in the selected display currency.

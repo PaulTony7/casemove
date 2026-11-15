@@ -18,6 +18,7 @@ mod inventory_view;
 mod login;
 mod messages;
 mod overview_view;
+mod price_source;
 mod settings_view;
 mod steam;
 mod storage_view;

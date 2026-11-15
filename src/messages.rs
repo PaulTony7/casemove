@@ -33,8 +33,9 @@ pub enum Message {
         url: String,
         result: Result<egui::ColorImage, ()>,
     },
-    /// Fetched live Steam Market quotes as `(market_hash_name, price)` pairs.
-    LivePrices(Vec<(String, f64)>),
+    /// Fetched live quotes for one market as `(market_hash_name, price)`
+    /// pairs, tagged with the market they came from.
+    LivePrices(pricing::Market, Vec<(String, f64)>),
     /// All storage units' contents as `(casket id, items)` pairs, `(attempt,
     /// result)`.
     StorageAll(u64, Result<Vec<(String, Vec<InventoryItem>)>, String>),

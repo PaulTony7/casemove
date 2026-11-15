@@ -109,7 +109,8 @@ fn unit_rows(app: &CasemoveApp) -> Vec<UnitRow> {
     rows
 }
 
-fn header(ui: &mut egui::Ui, app: &CasemoveApp, rows: &[UnitRow], load: &mut bool) {
+fn header(ui: &mut egui::Ui, app: &mut CasemoveApp, rows: &[UnitRow], load: &mut bool) {
+    let mut chosen_market = None;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(
@@ -137,6 +138,9 @@ fn header(ui: &mut egui::Ui, app: &CasemoveApp, rows: &[UnitRow], load: &mut boo
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(market) = crate::price_source::show(ui, app) {
+                chosen_market = Some(market);
+            }
             let label = if app.storage_aggregate_busy {
                 "Loading storage...".to_owned()
             } else if app.storage_aggregate.is_some() {
@@ -158,6 +162,7 @@ fn header(ui: &mut egui::Ui, app: &CasemoveApp, rows: &[UnitRow], load: &mut boo
             }
         });
     });
+    crate::price_source::apply(app, chosen_market);
 }
 
 fn search(ui: &mut egui::Ui, app: &mut CasemoveApp) {

@@ -585,6 +585,44 @@ mod tests {
     }
 
     #[test]
+    fn switching_markets_shows_that_markets_quote_or_nothing() {
+        // The snapshot only has Steam values; the other markets are live-only,
+        // so a row must not fall back to the Steam snapshot's number under a
+        // different provider.
+        let name = "AK-47 | Redline";
+        let wear = Some("Field-Tested");
+        let snapshot = table()
+            .price(name, wear, PriceSource::SteamListing)
+            .unwrap();
+        assert!(snapshot > 0.0);
+
+        // Steam without a live quote: the bundled snapshot.
+        assert_eq!(
+            resolve_market(name, wear, PriceSource::SteamListing, Market::Steam, None),
+            Some(snapshot)
+        );
+        // Steam with one: the live quote.
+        assert_eq!(
+            resolve_market(name, wear, PriceSource::SteamListing, Market::Steam, Some(11.0)),
+            Some(11.0)
+        );
+        // Skinport with one: that quote, never the Steam snapshot.
+        assert_eq!(
+            resolve_market(name, wear, PriceSource::SteamListing, Market::Skinport, Some(9.5)),
+            Some(9.5)
+        );
+        // Skinport before its prices arrive: nothing, not a Steam figure.
+        assert_eq!(
+            resolve_market(name, wear, PriceSource::SteamListing, Market::Skinport, None),
+            None
+        );
+        assert_eq!(
+            resolve_market(name, wear, PriceSource::SteamListing, Market::Csfloat, None),
+            None
+        );
+    }
+
+    #[test]
     fn live_quotes_override_only_the_steam_source() {
         let snapshot = table()
             .price(

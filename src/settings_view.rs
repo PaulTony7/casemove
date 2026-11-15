@@ -44,19 +44,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         row(
             ui,
             "Price source",
-            "Where live quotes come from; also switchable from the inventory bar.",
+            "Where live quotes come from; also switchable from every page header.",
             |ui| {
-                let mut chosen = market;
-                egui::ComboBox::from_id_salt("settings-market")
-                    .selected_text(market.label())
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for option in pricing::Market::ALL {
-                            ui.selectable_value(&mut chosen, option, option.label())
-                                .on_hover_text(option.basis());
-                        }
-                    });
-                if chosen != market {
+                if let Some(chosen) = crate::price_source::show(ui, &*app) {
                     market = chosen;
                 }
             },
