@@ -1,13 +1,11 @@
 # Feature Parity Checklist
 
-Snapshot: 2026-11-14. Compared against the legacy application and the current
-Rust working tree. Only outstanding work is listed — completed work lives in
-git history.
+Snapshot: 2026-11-14. Only outstanding work is listed — completed work lives in
+git history, and the full remaining inventory (with rationale and platform
+notes) is in [MISSING_FEATURES.md](MISSING_FEATURES.md).
 
 - Sections group related work; their order is **not a priority ranking**.
-- Keep legacy workflows until replacement behavior and characterization tests
-  are verified. Use [COMMANDS.md](COMMANDS.md) for the command/event surface and
-  [REWRITE_PLAN.md](REWRITE_PLAN.md) for migration phases.
+- Use [COMMANDS.md](COMMANDS.md) for the command/event surface.
 
 ## Application And Build
 
@@ -44,21 +42,19 @@ git history.
 - Confirm the ClientHello correction resolves the reported live inventory timeout.
 - Verify OS-keyring save/read/delete and remembered-login reuse after restart with a real account.
 - Verify shared-secret login, email-only challenges, clock skew, and code rollover against a real account.
-- Compare real-account inventory IDs/counts and visible metadata against legacy.
+- Compare real-account inventory IDs/counts and visible metadata against a saved
+  export of the old app.
 - Verify empty and non-empty storage units through the live GC.
 - Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - Verify moves/removals during storage loading and notification ordering.
 - Decide whether storage units differing only in contained count should merge
-  in the inventory table (the grouping key, unlike legacy's `combineInventory`,
-  omits the count and item id, so they share a row today).
+  in the inventory table (the grouping key omits the count, so they share a
+  row today).
 - Startup, filtering, bulk-move, memory, and listener-count metrics.
 - Re-login/disconnect/reconnect soak tests with stable dispatcher/listener counts.
-- Platform packaging/signing and final migration/parity sign-off before deleting legacy.
+- Platform packaging/signing and final parity sign-off.
 
-## Optional Expansion (Not Legacy Parity)
-
-Additional functioning market providers are expansion work rather than a
-missing legacy feature (legacy's Buff163/Float sources select `url = ''`).
+## Optional Expansion
 
 - Additional market providers and provider selection.
 - Provider-specific rate limiting, caching, and fallback behavior.

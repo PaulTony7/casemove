@@ -1,7 +1,8 @@
 # Building Casemove
 
-The active desktop app is Rust + eframe/egui. The Electron app under `legacy/`
-is retained as the behavior reference and has a separate build process.
+The app is Rust + eframe/egui (native, no webview). Remaining work, including
+packaging and the platform checks that still need a real account, is listed in
+[MISSING_FEATURES.md](MISSING_FEATURES.md).
 
 ## Prerequisites
 
@@ -26,7 +27,7 @@ cargo clippy --workspace --all-targets
 ```
 
 The eframe app has not yet been packaged for distribution. Cross-platform
-packaging and signing are tracked in `FEATURE_PARITY_CHECKLIST.md`.
+packaging and signing are tracked in `MISSING_FEATURES.md`.
 
 ## Inventory
 

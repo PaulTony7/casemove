@@ -37,20 +37,18 @@ is packaging and live-account verification, tracked in
 - **Overview, Settings, export**: value/curve overview, currency conversion from
   the bundled snapshot, Steam-close prompt, dev-mode toggle, update check, and
   the legacy `downloadReport` CSV export.
-- **Open gates**: live-account verification (login, inventory, trade-up,
-  container, connection monitor, images), wire verification of SO unknown fields
-  4/5, golden fixtures and metrics, and platform packaging/signing. `legacy/` is
-  kept until those gates pass.
+- **Open gates**: see [MISSING_FEATURES.md](MISSING_FEATURES.md) — live-account
+  verification, the SO field 4/5 wire question, metrics, and packaging. The old
+  Electron app was removed on 2026-11-14.
 
 ## Strategy
 
-- **Dual-app strangler**: the new app lives in this repo and grows
-  feature-by-feature to parity; the Electron app stays shippable the whole time.
-  Each parity milestone deletes the corresponding legacy code. Zero JavaScript in
-  the new app.
-- **Same repo, `legacy/` folder**: the existing Electron project moves wholesale
-  into `legacy/` (paths intact, still buildable). New code is added alongside;
-  shared data files become fixtures both apps can read.
+- **Dual-app strangler** (finished): the Electron app stayed shippable while the
+  Rust app grew feature-by-feature beside it. It was deleted on 2026-11-14 once
+  every page was ported; the remaining work is in `docs/MISSING_FEATURES.md`.
+  Zero JavaScript remains in the repository.
+- **Shared data**: the old app's bundled snapshots (prices, currency,
+  collections, item schema and translations) live in `data/`.
 - The strangler seam is a single typed **command/event contract** (replacing the
   29 IPC channels + the `userEvents` mega-channel). This contract doubles as the
   parity checklist.
@@ -59,19 +57,18 @@ is packaging and live-account verification, tracked in
 
 ```
 casemove/
-├── legacy/                  # current Electron project (moved wholesale, still buildable)
 ├── src/                     # egui frontend (native eframe app, no JS, no WASM)
 ├── crates/
 │   ├── app-core/            # command layer: Core methods over shared state
 │   ├── app-commands/        # typed command + event contract (the strangler seam)
 │   ├── steam-core/          # login strategies, session, CM events
 │   ├── gc-cs2/              # GC session, SO cache, casket ops  ← critical path
-│   ├── item-schema/         # port of items/index.js inventoryConverter
+│   ├── item-schema/         # schema, translations, and image catalogs
 │   ├── pricing/             # PriceProvider trait: Steam, Buff163, Skinport, … + FX
-│   └── domain/              # trade-up math, filters/sort, item model (pure, tested)
-├── data/                    # shared fixtures: prices.json, items_game.json, collections.json
-├── docs/                    # this plan, metrics baselines, parity checklist
-└── .github/workflows/       # cargo clippy/test + legacy lint
+│   └── domain/              # trade-up math, classification, item model (pure, tested)
+├── data/                    # bundled snapshots: prices, currency, collections, item schema
+├── docs/                    # this plan, missing features, metrics, command contract
+└── .github/workflows/       # cargo clippy/test
 ```
 
 ## Phases
@@ -94,7 +91,8 @@ casemove/
 
 ### Phase 1 — Foundation
 
-- Move current project to `legacy/`, scaffold Cargo workspace, CI.
+- ~~Move current project to `legacy/`~~ (done in Phase 1; removed 2026-11-14),
+  scaffold Cargo workspace, CI.
 - Write the command/event contract from the existing 29 IPC channels + 7 routes
   + README feature list (this is the spec).
 - Settings store on OS keyring (fixes `encryptionKey: 'this_only_obfuscates'`),
@@ -135,7 +133,7 @@ the trait, rate-limiting/caching.
 ### Phase 5 — Cutover
 
 Parity checklist sign-off, a native packager (cargo-dist/cargo-packager),
-sign/notarize equivalents for `electron-builder`, then delete `legacy/`.
+sign/notarize equivalents for `electron-builder`.
 
 ## Risks
 
@@ -149,20 +147,19 @@ sign/notarize equivalents for `electron-builder`, then delete `legacy/`.
 
 ## Testing
 
-- **Characterization tests before deletion**: legacy code becomes the spec —
-  freeze outputs of item conversion, filtering/sorting, trade-up math, and
-  price lookup as golden fixtures in `data/`; assert Rust matches.
+- **Characterization tests**: the old code was the spec — item conversion,
+  filtering/sorting, trade-up math, and price lookup are frozen as literal
+  expectations (`src/inventory_golden.rs`, crate tests). With the old app gone,
+  treat these goldens as the reference when the behavior is questioned.
 - `criterion` micro-benchmarks for pure core logic.
 - The existing `App.test.tsx` asserts nothing; it is not carried over.
 
 ## Metrics
 
-### Baseline first (before `legacy/` is touched)
+### Baseline
 
-Add lightweight timing probes to the legacy app around the same points the new
-app instruments, run the scripted benchmark scenario suite, and record results
-in `docs/metrics-baseline.md`. The same scenarios run against the new app at
-every milestone, side by side.
+The pre-rewrite baseline is recorded in `docs/metrics/baseline-legacy.json`.
+The scenarios below run against the Rust app alone now.
 
 Shared benchmark scenarios (identical script for both apps):
 
