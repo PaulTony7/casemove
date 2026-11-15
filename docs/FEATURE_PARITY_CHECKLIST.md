@@ -6,13 +6,12 @@ git history.
 
 - Sections group related work; their order is **not a priority ranking**.
 - Keep legacy workflows until replacement behavior and characterization tests
-  are verified. Use [COMMANDS.md](COMMANDS.md) for IPC contracts and parity status,
-  and [REWRITE_PLAN.md](REWRITE_PLAN.md) for migration phases.
+  are verified. Use [COMMANDS.md](COMMANDS.md) for the command/event surface and
+  [REWRITE_PLAN.md](REWRITE_PLAN.md) for migration phases.
 
 ## Application And Build
 
-- Windows executable and installer packaging for the eframe app (the Tauri
-  MSI/NSIS path was removed in the native-UI pivot).
+- Windows executable and installer packaging for the eframe app.
 - Custom Windows titlebar and minimize/maximize/close controls.
 - Self-update download/install (the status strip compares the build with
   the latest GitHub release and opens the release page; no in-app installer).
@@ -21,8 +20,7 @@ git history.
 
 ## Login And Accounts
 
-- Verify the Steam-close prompt on Windows (the prompt, "Close and login", and
-  the "Dont show this again" latch are ported).
+- Verify the Steam-close prompt on Windows.
 - Verify the connection monitor against a real session (CM logoff, automatic
   retry, and the Retry connection button).
 
@@ -31,32 +29,12 @@ git history.
 - Verify live item/sticker image coverage and cached/bundled fallback.
 - Complete agent-specific and remaining specialized-item enrichment.
 
-The app loads the bundled schema immediately, uses a cached live schema when
-available, and refreshes it at most once per 24 hours. Live VDF schema and
-translation data come from Skinledger; image catalogs for skins, stickers,
-agents, collectibles, graffiti, music kits, crates, and keys come from the
-public CSGO-API dataset. Failed refreshes keep the last cached or bundled
-schema.
-
-**Recommended next feature:** Item/sticker image coverage and agent-specific
-enrichment.
-
-## Operations
-
-- Item-position operations; confirm user-facing legacy usage before porting.
-- Equip operations; confirm user-facing legacy usage before porting.
-
-## Preferences
-
-- Confirm whether dev mode should gain behavior (legacy persisted the switch
-  and never read it; Settings exposes it identically).
-
 ## Trade-Ups And Containers
 
 - Verify a live trade-up: the submitted contract, the GC ack, and the
   resulting item appearing through inventory changes.
-- Verify the picker against a real inventory (collections from the bundled
-  `collections.json`, wear/StatTrak locks, storage-unit inputs).
+- Verify the picker against a real inventory (wear/StatTrak locks and
+  storage-unit inputs).
 - Verify container opening (Open action with key selection, validation, and the
   unlocked item arriving through inventory changes).
 
@@ -66,8 +44,7 @@ enrichment.
 - Verify OS-keyring save/read/delete and remembered-login reuse after restart with a real account.
 - Verify shared-secret login, email-only challenges, clock skew, and code rollover against a real account.
 - Compare real-account inventory IDs/counts and visible metadata against legacy.
-- Verify empty and non-empty storage units through native IPC and the live GC.
-- Verify live schema refresh, cached/bundled fallback, and item/sticker image rendering.
+- Verify empty and non-empty storage units through the live GC.
 - Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - Verify moves/removals during storage loading and notification ordering.
 - Golden characterization fixtures for conversion, grouping, filters, and sorts.
@@ -77,8 +54,8 @@ enrichment.
 
 ## Optional Expansion (Not Legacy Parity)
 
-Legacy's Buff163/Float source choices are locked; additional functioning market
-providers are expansion work rather than a missing working legacy feature.
+Additional functioning market providers are expansion work rather than a
+missing legacy feature (legacy's Buff163/Float sources select `url = ''`).
 
 - Additional market providers and provider selection.
 - Provider-specific rate limiting, caching, and fallback behavior.

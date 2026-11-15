@@ -18,11 +18,11 @@ cargo build --workspace
 cargo run -p casemove-ui
 ```
 
-Run the offline workspace tests and formatting check with:
+Run the offline workspace tests and clippy with:
 
 ```powershell
 cargo test --workspace
-cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
 ```
 
 The eframe app has not yet been packaged for distribution. Cross-platform
@@ -30,8 +30,9 @@ packaging and signing are tracked in `FEATURE_PARITY_CHECKLIST.md`.
 
 ## Inventory
 
-After signing in, open Inventory and choose Connect to CS2. Close running games
-first: the GC handshake marks this account as playing CS2. The inventory reads a
+The app connects to the CS2 Game Coordinator automatically after sign-in; there
+is no separate connect step. Close running games first: the GC handshake marks
+this account as playing CS2. The inventory reads a
 welcome snapshot, then applies incremental SO create/update/remove messages
 while the retained GC client is connected. Item enrichment currently includes
 bundled names, wear, seed, stickers/patches, known collection metadata, music
@@ -47,6 +48,6 @@ last cached or bundled schema. Graffiti images use kit and tint IDs; standalone
 stickers/patches use kit IDs, separately from case definition IDs. Older image
 caches are invalidated automatically when these lookup rules change.
 Offline tests cover VDF parsing, image URL
-validation, and cache round-tripping, but live-account image rendering and the
-offline startup fallback still need verification. Storage contents are
-read-only; transfers are not implemented.
+validation, and cache round-tripping. Storage content loads, moves, renames,
+the withdraw flow, trade-ups, container opening, and CSV export are available
+from the app.

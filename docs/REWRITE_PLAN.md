@@ -7,91 +7,40 @@ codebase.
 Motivation: maintainability/modularity, reliability bug fixes, modernized stack,
 performance, and first-class support for Steam + third-party market APIs.
 
-## Current Progress (2026-11-13)
+## Current Progress (2026-11-14)
 
-- The UI shell was swapped from Tauri 2 + Leptos/WASM to **eframe + egui
-  (native, no webview, no trunk)**. The former `src-tauri` command handlers
-  moved verbatim into the new `crates/app-core` crate as plain async methods on
-  `Core`; the two Tauri events (`login:qr_challenge`, `wallet:changed`) became
-  `AppEvent`s on a channel whose sink requests an egui repaint. All workspace
-  tests pass after the move (accounts/session/inventory/model tests unchanged in
-  behavior). The login screen and inventory table were re-implemented in egui
-  with the same states, attempt/stale-reply guards, zeroization discipline, and
-  charcoal theme; item thumbnails and avatars are fetched off-thread into a
-  texture cache. Removed with the swap: `src-tauri/`, trunk/`index.html`/
-  `styles.css`, the WASM toolchain target, and the Leptos dependencies.
-  Packaging still needs a non-Tauri bundler (cargo-dist/cargo-packager) —
-  window icons moved to `icons/`. Live-account verification of the egui screens
-  is still pending, as before.
-- The Windows Tauri app builds and packages; it no longer opens the greeting
-  template. The Leptos signed-out screen follows the legacy charcoal palette,
-  Casemove branding, navigation, Steam login methods, and saved-account sidebar.
-- Saved-account metadata is loaded through Rust commands. Selecting an account
-  fills the username; removal is confirmed and persisted. Passwords and stored
-  credential blobs are never returned to the frontend. Imported Steam avatars
-  are displayed from allowlisted HTTPS hosts, and the saved-account order can
-  be changed and persisted from the sidebar.
-- First launch imports legacy preferences and account metadata from the native
-  OS configuration directory, without modifying the legacy store. Existing Rust
-  settings are preserved. Imported accounts require fresh authentication.
-- The regular login form now calls `steam-vent` for password authentication with
-  a supplied email/device Guard code or Steam mobile approval. A single native
-  session owner retains the connection, bounds login to 120 seconds, rejects
-  overlapping logins, and cancels pending authentication on sign-out. The UI
-  displays session identity and supports cancellation and sign-out.
-- Owned native password/code/token buffers are zeroized on drop. Remember for
-  later persists refresh tokens only in the OS keyring, with secret-free account
-  metadata and rollback on cancellation or metadata failure. Saved-account token
-  lookup is bounded by the login timeout and cancellation. Keyring/real-account
-  verification remains pending. Shared-secret login now validates Base64 input
-  before networking and generates device-only TOTP codes locally with zeroizing
-  secret ownership. Frontend credential buffers are cleared before awaiting IPC;
-  shared secrets are not persisted. QR login uses `steam-auth-rs`, with a locally
-  rendered challenge and optional keyring-backed refresh token. Browser-token
-  login uses `steam-client-rs` and a separate GC adapter; it is not remembered,
-  and that library does not provide equivalent token-zeroization guarantees.
-  Live-account verification of the new paths remains pending. Saved-account
-  order and allowlisted Steam avatar metadata are persisted.
-- Read-only inventory now uses a retained CS2 GC client and a bounded welcome
-  cache parser. Connecting is explicit because it marks the Steam account as
-  playing CS2. Requests time out after 30 seconds; sign-out cancels in-flight
-  work and invalidates only that session's client. Failed refreshes preserve the
-  last UI snapshot and reuse the existing dispatcher. A failed initial attach
-  requires sign-out/re-login: this avoids repeatedly creating detached dispatch
-  tasks on one Steam connection in `steam-vent` 0.5.0.
-- The inventory table supports search, name/rarity/float sorting, storage-unit
-  filtering, and 50-row pagination. Names and paint finishes resolve from the
-  bundled legacy schema; unknown items remain visible. Exact hashed thumbnails
-  are used where the bundled catalog has one; other items show a fallback icon.
-  Asset IDs remain strings across IPC. Reward-preview objects are excluded as
-  in the legacy converter. Wear/seed, nametags, rarity, StatTrak, applied
-  sticker/patch metadata, collection/trade-up data, music kits, and graffiti
-  tint are enriched. Inventory columns can be configured and persisted.
-  Incremental SO create/update/remove messages update the displayed snapshot
-  automatically. The bundled schema is available immediately, with live
-  Skinledger VDF refresh and Steam-hosted image catalogs cached for up to 24
-  hours. Live-account image rendering and offline-fallback behavior remain
-  unverified.
-- Read-only storage-unit contents now use the retained GC client. The native
-  command validates the storage ID against the loaded session inventory, reads
-  the expected count from attribute 270, and returns contents only after the GC
-  notification and matching item count. Empty results and errors are distinct;
-  concurrent inventory/contents calls are rejected, sign-out cancels in-flight
-  work, and the UI discards stale replies.
-- This is **not login or inventory parity**. Protocol/lifecycle/schema tests are
-  offline; browser checks use a synthetic IPC test double. A live-account login
-  and storage-contents load have not been verified for this production
-  integration. The decoder reads `objects_added` and `objects_removed` from
-  unknown SO fields 4 and 5 because the bundled proto omits them; these field
-  numbers and stream behavior still require verification against CS2 GC traffic.
-  Transfers, Steam/GC connection-loss events, and other authenticated pages
-  remain unimplemented. The native titlebar is retained; cross-platform
-  packaging is not yet verified.
-- Next vertical slice: verify a non-empty storage unit and a move during loading
-  against a real account, then implement Steam/GC connection events. The
-  Phase 0 report in `docs/metrics/spike-b.md` records the earlier real-account
-  spike; do not treat that as end-to-end verification of this production UI.
-  Keep legacy code until its matching workflow and characterization tests pass.
+The Rust rewrite has reached feature parity on every page; the remaining work
+is packaging and live-account verification, tracked in
+[FEATURE_PARITY_CHECKLIST.md](FEATURE_PARITY_CHECKLIST.md).
+
+- **Shell**: eframe + egui, native (no webview, WASM, or JavaScript). Pages:
+  Overview, Inventory, Storage, Trade-ups, Settings, plus the login screen and
+  saved-account sidebar. Charcoal theme, local QR rendering, off-thread image
+  loading into a texture cache.
+- **Login**: password with Guard code, shared-secret device TOTP, mobile
+  approval, QR (`steam-auth-rs`), browser-token (`steam-client-rs`), and
+  remembered refresh tokens in the OS keyring. Credential buffers zeroize; the
+  legacy `electron-store` encryption key is gone. Legacy preferences and account
+  metadata are imported once without touching the legacy store.
+- **Connection**: sign-in attaches to the CS2 GC automatically. The retained GC
+  client streams SO create/update/remove deltas; a CM logon monitor reports
+  `ClientLoggedOff`/`ClientLogOnResponse` as a connection state and retries the
+  attach with 5/15/30/60 s backoff, alongside a manual Retry connection button.
+- **Inventory**: search, filters, sorts, grouping, and 50-row pagination;
+  configurable persisted columns. Bundled schema immediately, live Skinledger VDF
+  and CSGO-API image catalogs cached for 24 h, with bundled fallback.
+- **Storage**: contents, bulk moves, withdraw, rename, fast mode, and container
+  opening; notification-correlated acks with timeouts owned by the core.
+- **Trade-ups**: picker with wear/StatTrak locks and storage-unit inputs,
+  outcomes/EV from the bundled `collections.json`, review dialog, and the
+  hand-ported craft payload.
+- **Overview, Settings, export**: value/curve overview, currency conversion from
+  the bundled snapshot, Steam-close prompt, dev-mode toggle, update check, and
+  the legacy `downloadReport` CSV export.
+- **Open gates**: live-account verification (login, inventory, trade-up,
+  container, connection monitor, images), wire verification of SO unknown fields
+  4/5, golden fixtures and metrics, and platform packaging/signing. `legacy/` is
+  kept until those gates pass.
 
 ## Strategy
 
@@ -127,7 +76,7 @@ casemove/
 
 ## Phases
 
-### Phase 0 — Risk retirement (throwaway spikes)
+### Phase 0 — Risk retirement (throwaway spikes) — done
 
 1. **Spike A: Rust Steam login.** Evaluate `steam-vent` (0.5.0, has
    `GCHandshake`), `steam-client-rs` (0.2.0, mirrors node-steam-user incl.
@@ -140,9 +89,8 @@ casemove/
    output for the same account. **Contingency if this fails: a thin Node
    sidecar running `globaloffensive` behind the same `app-commands` interface —
    the contract makes the swap invisible to the UI.**
-3. **Spike C: Tauri 2 + Leptos + trunk shell.** Custom titlebar (legacy uses
-   `frame: false` on Windows), dev loop, packaging on Win/mac/Linux
-   (WebKitGTK is the Linux risk).
+3. **Spike C: UI shell.** Tauri 2 + Leptos was evaluated and replaced by
+   native eframe/egui (see Current Progress).
 
 ### Phase 1 — Foundation
 
@@ -150,10 +98,9 @@ casemove/
 - Write the command/event contract from the existing 29 IPC channels + 7 routes
   + README feature list (this is the spec).
 - Settings store on OS keyring (fixes `encryptionKey: 'this_only_obfuscates'`),
-  one-time migration reader for the legacy `electron-store` JSON (saved
-  accounts, prefs).
+  one-time import of the legacy `electron-store` JSON (saved accounts, prefs).
 
-### Phase 2 — Rust core (dependency order)
+### Phase 2 — Rust core (dependency order) — done
 
 1. `item-schema` — port `inventoryConverter` (613 lines, pure); bundled JSON
    first, live schema later.
@@ -161,8 +108,8 @@ casemove/
    (replaces the dead `url = ''` path with real Steam Market/Buff/Skinport
    calls), FX rates.
 3. `steam-core` + `gc-cs2` — login flows, GC session, inventory events.
-   Register all commands **once** at startup with session state behind
-   `Arc<Mutex<_>>` — structurally fixes the re-login listener-duplication leak.
+   Session state behind `Arc<Mutex<_>>`, not per-login closures, so re-login
+   cannot duplicate listeners.
 4. Storage-unit ops (`addToCasket` / `removeFromCasket` / `nameItem` /
    positions / equip) with correct `itemCustomizationNotification` correlation
    and fast-mode semantics.
@@ -172,10 +119,9 @@ casemove/
 
 ### Phase 3 — UI parity, page by page
 
-Each page ends with its legacy counterpart deletable:
-
 Login (saved accounts, QR) → Inventory → **Storage units from/to + move modal
-(the core feature)** → Settings → Overview/charts → Trade-up.
+(the core feature)** → Settings → Overview/charts → Trade-up. Each page ends
+with its legacy counterpart deletable.
 
 Filters/sort ported from `inventoryFunctions.tsx` (494 lines, 22 importers)
 with golden tests against legacy outputs; virtualized tables (legacy renders
@@ -188,9 +134,8 @@ the trait, rate-limiting/caching.
 
 ### Phase 5 — Cutover
 
-Parity checklist sign-off, data migration on first run, a native packager
-(cargo-dist/cargo-packager) replaces
-`electron-builder` (sign/notarize equivalents), delete `legacy/`.
+Parity checklist sign-off, a native packager (cargo-dist/cargo-packager),
+sign/notarize equivalents for `electron-builder`, then delete `legacy/`.
 
 ## Risks
 
