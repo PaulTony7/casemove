@@ -34,7 +34,9 @@ struct SectionOut {
 }
 
 /// Optional table columns; the item id stays hidden until asked for.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Serde keeps the user's choices in the settings store across restarts.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Columns {
     pub rarity: bool,
     pub wear: bool,
@@ -176,6 +178,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     if app.view.page != app.saved_page {
         app.saved_page = app.view.page;
         app.save_page();
+    }
+    if app.view.columns != app.saved_columns {
+        app.saved_columns = app.view.columns;
+        app.save_columns();
     }
 }
 

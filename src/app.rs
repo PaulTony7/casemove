@@ -90,6 +90,8 @@ pub struct CasemoveApp {
     /// Persisted sidebar width and the last inventory page.
     pub sidebar_width: f32,
     pub saved_page: usize,
+    /// Last persisted table columns, so changes are saved once each.
+    pub saved_columns: inventory_view::Columns,
     /// Account row currently being dragged to reorder the saved list.
     pub drag_account: Option<String>,
 
@@ -159,6 +161,9 @@ impl CasemoveApp {
                 _ => (false, false, false),
             };
         let saved_page = core.store_get::<usize>("ui.page").unwrap_or(0);
+        let columns = core
+            .store_get::<inventory_view::Columns>("ui.columns")
+            .unwrap_or_default();
         let mut app = Self {
             core,
             rt,
@@ -190,6 +195,7 @@ impl CasemoveApp {
             overview_by,
             sidebar_width,
             saved_page,
+            saved_columns: columns,
             drag_account: None,
             inventory: None,
             pending_inventory_events: Vec::new(),
@@ -218,6 +224,7 @@ impl CasemoveApp {
             prices_busy: false,
             view: inventory_view::InventoryViewState {
                 page: saved_page,
+                columns,
                 ..Default::default()
             },
             storage_view: inventory_view::InventoryViewState::default(),
@@ -837,6 +844,15 @@ impl CasemoveApp {
         let core = self.core.clone();
         drop(self.rt.spawn_blocking(move || {
             let _ = core.store_set("ui.view", value);
+        }));
+    }
+
+    /// Persists the visible table columns so they survive a restart.
+    pub fn save_columns(&self) {
+        let core = self.core.clone();
+        let columns = self.view.columns;
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("ui.columns", columns);
         }));
     }
 

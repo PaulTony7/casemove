@@ -14,6 +14,7 @@ app-core = { path = "crates/app-core" }
 qrcode = { version = "0.14", default-features = false }
 image = "0.25"
 reqwest = "0.13"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
