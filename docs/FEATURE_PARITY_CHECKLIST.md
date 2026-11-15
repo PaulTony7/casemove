@@ -26,8 +26,9 @@ git history.
 
 ## Inventory And Item Data
 
-- Verify live item/sticker image coverage and cached/bundled fallback.
-- Complete agent-specific and remaining specialized-item enrichment.
+- Verify live item/sticker/image coverage and cached/bundled fallback. A few
+  CSGO-API entries point at `raw.githubusercontent.com`; they are skipped on
+  purpose because images load only from allowlisted Steam CDN hosts.
 
 ## Trade-Ups And Containers
 
