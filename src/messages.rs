@@ -31,6 +31,8 @@ pub enum Message {
     /// All storage units' contents as `(casket id, items)` pairs, `(attempt,
     /// result)`.
     StorageAll(u64, Result<Vec<(String, Vec<InventoryItem>)>, String>),
+    /// Result of moving one item into a storage unit `(attempt, result)`.
+    StorageMove(u64, Result<(), String>),
 }
 
 /// Clonable handle for sending a `Message` and waking the UI.

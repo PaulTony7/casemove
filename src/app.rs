@@ -28,6 +28,15 @@ pub struct LoginForm {
     pub qr_remember: bool,
 }
 
+#[derive(Default, Clone)]
+pub struct MoveDialog {
+    pub item_id: String,
+    pub item_name: String,
+    pub query: String,
+    pub busy: bool,
+    pub error: String,
+}
+
 pub struct CasemoveApp {
     pub core: Core,
     pub rt: tokio::runtime::Runtime,
@@ -88,6 +97,7 @@ pub struct CasemoveApp {
     /// units", used by the management view for per-unit values.
     pub storage_unit_contents: std::collections::BTreeMap<String, Vec<InventoryItem>>,
     pub storage_query: String,
+    pub move_dialog: Option<MoveDialog>,
     pub price_cache: pricing::LiveCache,
     pub prices_busy: bool,
     pub view: inventory_view::InventoryViewState,
@@ -176,6 +186,7 @@ impl CasemoveApp {
             storage_aggregate_error: String::new(),
             storage_unit_contents: std::collections::BTreeMap::new(),
             storage_query: String::new(),
+            move_dialog: None,
             price_cache: pricing::LiveCache::load(&prices_cache_path()),
             prices_busy: false,
             view: inventory_view::InventoryViewState {
@@ -457,6 +468,26 @@ impl CasemoveApp {
                             self.refresh_live_prices(false);
                         }
                         Err(error) => self.storage_aggregate_error = error,
+                    }
+                }
+            }
+            Message::StorageMove(attempt, result) => {
+                if attempt != self.attempt {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        self.move_dialog = None;
+                        // Counts and contents changed; load them on demand.
+                        self.storage_aggregate = None;
+                        self.storage_unit_contents.clear();
+                        self.refresh_inventory();
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = &mut self.move_dialog {
+                            dialog.busy = false;
+                            dialog.error = error;
+                        }
                     }
                 }
             }
@@ -838,6 +869,8 @@ impl CasemoveApp {
         self.storage_majors.clear();
         self.storage_busy = false;
         self.storage_error.clear();
+        self.storage_unit_contents.clear();
+        self.move_dialog = None;
         self.session_busy = true;
         let core = self.core.clone();
         let reply = self.reply.clone();
@@ -857,6 +890,36 @@ impl CasemoveApp {
         let reply = self.reply.clone();
         self.rt.spawn(async move {
             reply.send(Message::Inventory(attempt, core.refresh_inventory().await));
+        });
+    }
+
+    pub fn begin_move_to_storage(&mut self, item_id: String, item_name: String) {
+        if self.session_busy || self.profile.is_none() {
+            return;
+        }
+        self.move_dialog = Some(MoveDialog {
+            item_id,
+            item_name,
+            ..Default::default()
+        });
+    }
+
+    pub fn move_item_to_storage(&mut self, casket_id: String) {
+        let Some(dialog) = &mut self.move_dialog else {
+            return;
+        };
+        if dialog.busy {
+            return;
+        }
+        dialog.busy = true;
+        dialog.error.clear();
+        let item_id = dialog.item_id.clone();
+        let attempt = self.attempt;
+        let core = self.core.clone();
+        let reply = self.reply.clone();
+        self.rt.spawn(async move {
+            let result = core.move_to_storage(casket_id, item_id).await;
+            reply.send(Message::StorageMove(attempt, result));
         });
     }
 
@@ -1000,6 +1063,7 @@ impl eframe::App for CasemoveApp {
             });
 
         self.removal_dialog(ctx);
+        self.move_to_storage_dialog(ctx);
     }
 }
 
@@ -1378,8 +1442,134 @@ impl CasemoveApp {
 
     // --- removal confirmation ---------------------------------------------
 
-    fn removal_dialog(&mut self, ctx: &egui::Context) {
-        let Some(username) = self.pending_removal.clone() else {
+    fn move_to_storage_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.move_dialog.clone() else {
+            return;
+        };
+        if !dialog.busy && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.move_dialog = None;
+            return;
+        }
+        let mut units: Vec<(String, String, usize)> = self
+            .inventory
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| item.is_storage_unit)
+                    .map(|item| {
+                        (
+                            item.id.clone(),
+                            item.custom_name
+                                .clone()
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or_else(|| item.name.clone()),
+                            item.storage_item_count.unwrap_or(0) as usize,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        units.sort_by_key(|unit| unit.1.to_lowercase());
+
+        let busy = dialog.busy;
+        let mut query = dialog.query.clone();
+        let mut target: Option<String> = None;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("move_to_storage")).show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.label(
+                egui::RichText::new("Move to storage")
+                    .size(19.0)
+                    .strong(),
+            );
+            ui.label(egui::RichText::new(&dialog.item_name).color(theme::MUTED));
+            if !dialog.error.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&dialog.error).size(12.0).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("Search storage units")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                let needle = query.to_lowercase();
+                let visible: Vec<&(String, String, usize)> = units
+                    .iter()
+                    .filter(|(_, name, _)| needle.is_empty() || name.to_lowercase().contains(&needle))
+                    .collect();
+                if visible.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No storage units")
+                            .size(12.0)
+                            .color(theme::MUTED),
+                    );
+                }
+                for (id, name, count) in visible {
+                    let full = *count >= 1000;
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(name).size(13.0));
+                            ui.label(
+                                egui::RichText::new(format!("{count} / 1000 items"))
+                                    .size(10.0)
+                                    .color(if full { theme::ERROR } else { theme::MUTED }),
+                            );
+                        });
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                let label = if busy {
+                                    "Moving..."
+                                } else if full {
+                                    "Full"
+                                } else {
+                                    "Move here"
+                                };
+                                if ui
+                                    .add_enabled(
+                                        !busy && !full,
+                                        egui::Button::new(label).fill(if full {
+                                            theme::RAISED
+                                        } else {
+                                            theme::ACCENT
+                                        }),
+                                    )
+                                    .clicked()
+                                {
+                                    target = Some(id.clone());
+                                }
+                            },
+                        );
+                    });
+                    ui.separator();
+                }
+            });
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Cancel"))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        if let Some(dialog) = &mut self.move_dialog {
+            dialog.query = query;
+        }
+        if cancel {
+            self.move_dialog = None;
+        } else if let Some(id) = target {
+            self.move_item_to_storage(id);
+        }
+    }
+
+    fn removal_dialog(&mut self, ctx: &egui::Context) {        let Some(username) = self.pending_removal.clone() else {
             return;
         };
         if !self.removing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {

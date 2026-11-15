@@ -41,8 +41,8 @@ sticker-kit images, and case images use inventory definition IDs. Offline
 conversion tests and opt-in live catalog/download tests cover these paths;
 live-account rendering is still unverified.
 
-**Recommended next feature:** Transfer-to page and destination-unit selection, built
-on the storage-management view's unit list and capacity data.
+**Recommended next feature:** Remove-from storage flows plus item selection, building
+on the move-to acknowledgement path and the storage contents view.
 
 ## Storage Units
 
@@ -54,14 +54,14 @@ on the storage-management view's unit list and capacity data.
 
 ## Transfers And Bulk Moves
 
-- [ ] Transfer-to page and destination-unit selection.
+- [x] Transfer-to page and destination-unit selection.
 - [ ] Transfer-from page and source-unit selection.
 - [ ] Select individual/grouped items and requested quantities.
 - [ ] Select all filtered items and clear selection.
-- [ ] Validate ownership, moveability, and destination capacity before sending.
-- [ ] Add one item to a storage unit with correlated GC acknowledgement.
+- [x] Validate ownership, moveability, and destination capacity before sending.
+- [x] Add one item to a storage unit with correlated GC acknowledgement.
 - [ ] Remove one item from a storage unit with correlated GC acknowledgement.
-- [ ] Handle timeouts and ambiguous results without blindly retrying mutations.
+- [x] Handle timeouts and ambiguous results without blindly retrying mutations.
 - [ ] Bulk-move queue, review modal, and progress display.
 - [ ] Partial-failure reporting and inventory/storage reconciliation.
 - [ ] Fast-mode behavior, pacing, and acknowledgement semantics.

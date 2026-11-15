@@ -87,6 +87,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut refresh = false;
     let mut sign_out = false;
     let mut open_storage: Option<(String, String)> = None;
+    let mut move_to: Option<(String, String)> = None;
     let mut clipboard: Option<String> = None;
 
     let shortcuts = Shortcuts {
@@ -115,7 +116,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
             if app.storage_selection.is_some() {
                 storage_section(ui, app, &shortcuts, &mut clipboard);
             } else {
-                main_section(ui, app, &shortcuts, &mut open_storage, &mut clipboard);
+                main_section(
+                    ui,
+                    app,
+                    &shortcuts,
+                    &mut open_storage,
+                    &mut move_to,
+                    &mut clipboard,
+                );
             }
         });
 
@@ -130,6 +138,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
     if let Some((casket_id, name)) = open_storage {
         app.open_storage_contents(casket_id, name);
+    }
+    if let Some((item_id, item_name)) = move_to {
+        app.begin_move_to_storage(item_id, item_name);
     }
     if let Some(text) = clipboard {
         ui.ctx().copy_text(text);
@@ -232,6 +243,7 @@ fn main_section(
     app: &mut CasemoveApp,
     shortcuts: &Shortcuts,
     open_storage: &mut Option<(String, String)>,
+    move_to: &mut Option<(String, String)>,
     clipboard: &mut Option<String>,
 ) {
     if app.inventory.is_none() {
@@ -283,6 +295,7 @@ fn main_section(
         Section::Inventory,
         shortcuts,
         open_storage,
+        move_to,
         clipboard,
     );
 }
@@ -326,6 +339,7 @@ fn storage_section(
         Section::Storage,
         shortcuts,
         &mut None::<(String, String)>,
+        &mut None::<(String, String)>,
         clipboard,
     );
 }
@@ -337,6 +351,7 @@ fn items_section(
     section: Section,
     shortcuts: &Shortcuts,
     open_storage: &mut Option<(String, String)>,
+    move_to: &mut Option<(String, String)>,
     clipboard: &mut Option<String>,
 ) {
     let view: &mut InventoryViewState = match section {
@@ -408,9 +423,12 @@ fn items_section(
             &mut app.images,
             view,
             &rows[start..end],
-            open_storage,
-            clipboard,
-            section == Section::Inventory,
+            TableActions {
+                open_storage,
+                move_to,
+                clipboard,
+                show: section == Section::Inventory,
+            },
         );
         ui.add_space(6.0);
         footer(ui, view, total, start, end, value_label);
@@ -892,15 +910,27 @@ fn column_visible(def: &ColumnDef, columns: &Columns, show_actions: bool) -> boo
     }
 }
 
+struct TableActions<'a> {
+    open_storage: &'a mut Option<(String, String)>,
+    move_to: &'a mut Option<(String, String)>,
+    clipboard: &'a mut Option<String>,
+    show: bool,
+}
+
 fn table(
     ui: &mut egui::Ui,
     images: &mut ImageCache,
     view: &mut InventoryViewState,
     rows: &[&GroupedItem],
-    open_storage: &mut Option<(String, String)>,
-    clipboard: &mut Option<String>,
-    show_actions: bool,
+    actions: TableActions<'_>,
 ) {
+    let TableActions {
+        open_storage,
+        move_to,
+        clipboard,
+        show,
+    } = actions;
+    let show_actions = show;
     let columns = view.columns;
     let defs: Vec<&ColumnDef> = COLUMN_DEFS
         .iter()
@@ -1077,6 +1107,15 @@ fn table(
                             if ui.add(contents).clicked() {
                                 *open_storage = Some((item.id.clone(), item.name.clone()));
                             }
+                        } else if item.moveable {
+                            let move_button = egui::Button::new(format!(
+                                "{}  Move",
+                                egui_phosphor::regular::UPLOAD_SIMPLE
+                            ))
+                            .fill(theme::RAISED);
+                            if ui.add(move_button).clicked() {
+                                *move_to = Some((item.id.clone(), item.name.clone()));
+                            }
                         }
                     });
                 }
@@ -1113,6 +1152,18 @@ fn table(
                             .clicked()
                     {
                         *open_storage = Some((item.id.clone(), item.name.clone()));
+                        ui.close();
+                    }
+                    if item.moveable
+                        && !item.is_storage_unit
+                        && ui
+                            .button(format!(
+                                "{}  Move to storage",
+                                egui_phosphor::regular::UPLOAD_SIMPLE
+                            ))
+                            .clicked()
+                    {
+                        *move_to = Some((item.id.clone(), item.name.clone()));
                         ui.close();
                     }
                 });

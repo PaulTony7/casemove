@@ -345,6 +345,83 @@ impl InventoryClient {
         )
         .await
     }
+
+    /// Puts an inventory item into a storage unit, waiting for the GC's
+    /// `CasketAdded` notification for that unit before reporting success.
+    pub async fn add_to_storage(
+        &self,
+        casket_id: u64,
+        item_id: u64,
+    ) -> Result<(), InventoryError> {
+        if let Some(browser) = &self.browser {
+            return browser.casket_move(casket_id, item_id, true).await;
+        }
+        self.casket_move_steam_vent(casket_id, item_id, true).await
+    }
+
+    /// Takes an item out of a storage unit, waiting for `CasketRemoved`.
+    pub async fn remove_from_storage(
+        &self,
+        casket_id: u64,
+        item_id: u64,
+    ) -> Result<(), InventoryError> {
+        if let Some(browser) = &self.browser {
+            return browser.casket_move(casket_id, item_id, false).await;
+        }
+        self.casket_move_steam_vent(casket_id, item_id, false).await
+    }
+
+    async fn casket_move_steam_vent(
+        &self,
+        casket_id: u64,
+        item_id: u64,
+        add: bool,
+    ) -> Result<(), InventoryError> {
+        if casket_id == 0 || item_id == 0 {
+            return Err(InventoryError::InvalidRequest);
+        }
+        let coordinator = self
+            .coordinator
+            .as_ref()
+            .ok_or(InventoryError::ConnectionFailed)?;
+        // Subscribe before sending so the acknowledgement cannot be missed.
+        let mut notifications = pin!(coordinator.on::<CasketNotification>());
+        let request = CMsgCasketItem {
+            casket_item_id: Some(casket_id),
+            item_item_id: Some(item_id),
+            ..Default::default()
+        };
+        if add {
+            coordinator
+                .send(CasketAddRequest(request))
+                .await
+                .map_err(|_| InventoryError::ConnectionFailed)?;
+        } else {
+            coordinator
+                .send(CasketExtractRequest(request))
+                .await
+                .map_err(|_| InventoryError::ConnectionFailed)?;
+        }
+        let expected = if add {
+            CASKET_ADDED_NOTIFICATION
+        } else {
+            CASKET_REMOVED_NOTIFICATION
+        };
+        let wait = async {
+            while let Some(message) = notifications.next().await {
+                let message = message.map_err(|_| InventoryError::ConnectionFailed)?;
+                if message.0.request() == expected
+                    && message.0.item_id.first() == Some(&casket_id)
+                {
+                    return Ok(());
+                }
+            }
+            Err(InventoryError::ConnectionFailed)
+        };
+        tokio::time::timeout(CASKET_MOVE_TIMEOUT, wait)
+            .await
+            .map_err(|_| InventoryError::TimedOut)?
+    }
 }
 
 impl Drop for InventoryClient {
@@ -485,6 +562,56 @@ impl BrowserInventoryClient {
         let mut items: Vec<_> = collector.items.into_values().collect();
         items.sort_by_key(|item| (item.inventory_position.unwrap_or(u32::MAX), item.id));
         Ok(items)
+    }
+
+    async fn casket_move(
+        &self,
+        casket_id: u64,
+        item_id: u64,
+        add: bool,
+    ) -> Result<(), InventoryError> {
+        if casket_id == 0 || item_id == 0 {
+            return Err(InventoryError::InvalidRequest);
+        }
+        let request = CMsgCasketItem {
+            casket_item_id: Some(casket_id),
+            item_item_id: Some(item_id),
+            ..Default::default()
+        };
+        let payload = request
+            .write_to_bytes()
+            .map_err(|_| InventoryError::ConnectionFailed)?;
+        let kind = if add {
+            EGCItemMsg::k_EMsgGCCasketItemAdd
+        } else {
+            EGCItemMsg::k_EMsgGCCasketItemExtract
+        };
+        let mut messages = self.messages.lock().await;
+        self.client
+            .lock()
+            .await
+            .send_to_gc_proto(730, kind as i32 as u32, &payload, GCProtoHeader::default())
+            .await
+            .map_err(|_| InventoryError::ConnectionFailed)?;
+        let expected = if add {
+            CASKET_ADDED_NOTIFICATION
+        } else {
+            CASKET_REMOVED_NOTIFICATION
+        };
+        tokio::time::timeout(CASKET_MOVE_TIMEOUT, async {
+            while let Some(message) = messages.recv().await {
+                if let Some(CasketEvent::Notification { item_ids, request }) =
+                    browser_casket_event(&message)?
+                    && request == expected
+                    && item_ids.first() == Some(&casket_id)
+                {
+                    return Ok(());
+                }
+            }
+            Err(InventoryError::ConnectionFailed)
+        })
+        .await
+        .map_err(|_| InventoryError::TimedOut)?
     }
 }
 
@@ -717,8 +844,13 @@ where
 }
 
 const CASKET_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const CASKET_MOVE_TIMEOUT: Duration = Duration::from_secs(30);
 /// `k_EGCItemCustomizationNotification_CasketContents`.
 const CASKET_CONTENTS_NOTIFICATION: u32 = 1012;
+/// `k_EGCItemCustomizationNotification_CasketAdded`.
+const CASKET_ADDED_NOTIFICATION: u32 = 1013;
+/// `k_EGCItemCustomizationNotification_CasketRemoved`.
+const CASKET_REMOVED_NOTIFICATION: u32 = 1014;
 /// Low and high 32 bits of the containing casket ID on an item.
 const CASKET_ID_LOW_ATTRIBUTE: u32 = 272;
 const CASKET_ID_HIGH_ATTRIBUTE: u32 = 273;
@@ -756,6 +888,18 @@ gc_message!(
     CMsgCasketItem,
     EGCItemMsg,
     EGCItemMsg::k_EMsgGCCasketItemLoadContents
+);
+gc_message!(
+    CasketAddRequest,
+    CMsgCasketItem,
+    EGCItemMsg,
+    EGCItemMsg::k_EMsgGCCasketItemAdd
+);
+gc_message!(
+    CasketExtractRequest,
+    CMsgCasketItem,
+    EGCItemMsg,
+    EGCItemMsg::k_EMsgGCCasketItemExtract
 );
 gc_message!(
     CasketNotification,
@@ -1239,6 +1383,14 @@ mod tests {
         assert_eq!(
             <CasketLoadRequest as RpcMessageWithKind>::KIND.enum_value(),
             1094
+        );
+        assert_eq!(
+            <CasketAddRequest as RpcMessageWithKind>::KIND.enum_value(),
+            1092
+        );
+        assert_eq!(
+            <CasketExtractRequest as RpcMessageWithKind>::KIND.enum_value(),
+            1093
         );
         let request = CasketLoadRequest(CMsgCasketItem {
             casket_item_id: Some(CASKET),

@@ -3,6 +3,9 @@ use app_commands::{InventoryChangeReason, InventoryItem, InventorySnapshot, Inve
 use gc_cs2::{EconItem, InventoryChange, InventoryClient, InventoryError};
 use item_schema::ItemSchema;
 
+/// Legacy storage units hold 1000 items.
+const STORAGE_CAPACITY: usize = 1000;
+
 #[derive(Default)]
 pub struct InventoryState(tokio::sync::Mutex<Option<GcSlot<InventoryClient>>>);
 
@@ -619,6 +622,89 @@ impl Core {
             contents.push((casket_id, items));
         }
         Ok(contents)
+    }
+
+    /// Moves one inventory item into a storage unit and waits for the GC
+    /// acknowledgement. Ownership, moveability, and free capacity are checked
+    /// before the request so an invalid move never reaches the GC.
+    pub async fn move_to_storage(
+        &self,
+        casket_id: String,
+        item_id: String,
+    ) -> Result<(), String> {
+        self.casket_move(casket_id, item_id, true).await
+    }
+
+    /// Takes one item out of a storage unit into the inventory.
+    pub async fn move_from_storage(
+        &self,
+        casket_id: String,
+        item_id: String,
+    ) -> Result<(), String> {
+        self.casket_move(casket_id, item_id, false).await
+    }
+
+    async fn casket_move(
+        &self,
+        casket_id: String,
+        item_id: String,
+        add: bool,
+    ) -> Result<(), String> {
+        let casket = parse_storage_id(&casket_id)?;
+        let item_id = parse_storage_id(&item_id).map_err(|_| "Invalid item ID.".to_owned())?;
+        let session = &*self.session;
+        let inventory = &*self.inventory;
+        let schema = self.schema_snapshot()?;
+        session
+            .with_connection(|_connection, generation| async move {
+                let state = inventory.0.try_lock().map_err(|_| {
+                    "An inventory or storage request is already in progress.".to_owned()
+                })?;
+                let slot = state
+                    .as_ref()
+                    .filter(|slot| slot.generation == generation)
+                    .ok_or_else(|| "Connect to CS2 and load inventory first.".to_owned())?;
+                let count = storage_item_count(&slot.items, casket)?;
+                if add && count as usize >= STORAGE_CAPACITY {
+                    return Err("That storage unit is full (1000 items).".to_owned());
+                }
+                let item = slot
+                    .items
+                    .iter()
+                    .find(|item| item.id == item_id)
+                    .ok_or_else(|| {
+                        if add {
+                            "That item is not in the current inventory.".to_owned()
+                        } else {
+                            "That item is not in this storage unit.".to_owned()
+                        }
+                    })?;
+                if add {
+                    if item.definition_index == 1201 {
+                        return Err(
+                            "Storage units cannot be put inside another storage unit.".to_owned()
+                        );
+                    }
+                    if !enrich_item(item.clone(), &schema).moveable {
+                        return Err("That item cannot be moved.".to_owned());
+                    }
+                }
+                let client = slot.client.as_ref().ok_or_else(|| {
+                    "The CS2 attach failed. Sign out of Steam and sign back in before reconnecting."
+                        .to_owned()
+                })?;
+                let result = if add {
+                    client.add_to_storage(casket, item_id).await
+                } else {
+                    client.remove_from_storage(casket, item_id).await
+                };
+                result.map_err(|error| match error {
+                    InventoryError::InvalidRequest => "Invalid storage-unit request.".to_owned(),
+                    error => error.to_string(),
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())?
     }
 }
 
