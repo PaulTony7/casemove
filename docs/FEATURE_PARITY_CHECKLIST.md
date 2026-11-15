@@ -47,7 +47,9 @@ git history.
 - Verify empty and non-empty storage units through the live GC.
 - Establish the wire meaning of SO unknown fields 4/5, or remove unsupported assumptions.
 - Verify moves/removals during storage loading and notification ordering.
-- Golden characterization fixtures for conversion, grouping, filters, and sorts.
+- Decide whether storage units differing only in contained count should merge
+  in the inventory table (the grouping key, unlike legacy's `combineInventory`,
+  omits the count and item id, so they share a row today).
 - Startup, filtering, bulk-move, memory, and listener-count metrics.
 - Re-login/disconnect/reconnect soak tests with stable dispatcher/listener counts.
 - Platform packaging/signing and final migration/parity sign-off before deleting legacy.

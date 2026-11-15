@@ -3,6 +3,8 @@ mod export;
 mod icons;
 mod images;
 mod inventory;
+#[cfg(test)]
+mod inventory_golden;
 mod inventory_view;
 mod login;
 mod messages;

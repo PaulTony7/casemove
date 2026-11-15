@@ -251,30 +251,22 @@ pub fn matches_filters(
     properties: &HashSet<String>,
 ) -> bool {
     let item = &row.representative;
+    // Legacy matches against trimmed fields, so a field with padding still
+    // matches its value.
+    let contains = |field: &str| field.trim().to_lowercase().contains(query);
     (!units_only || item.is_storage_unit)
         && (query.is_empty()
-            || item.name.to_lowercase().contains(query)
+            || contains(&item.name)
+            || item.wear_name.as_deref().is_some_and(contains)
             || item.id.contains(query)
-            || item
-                .custom_name
-                .as_ref()
-                .is_some_and(|name| name.to_lowercase().contains(query))
-            || item
-                .collection
-                .as_ref()
-                .is_some_and(|collection| collection.to_lowercase().contains(query))
+            || item.custom_name.as_deref().is_some_and(contains)
+            || item.collection.as_deref().is_some_and(contains)
             || item
                 .stickers
                 .iter()
                 .any(|sticker| sticker.name.to_lowercase().contains(query))
-            || item
-                .music_kit
-                .as_ref()
-                .is_some_and(|name| name.to_lowercase().contains(query))
-            || item
-                .graffiti
-                .as_ref()
-                .is_some_and(|name| name.to_lowercase().contains(query)))
+            || item.music_kit.as_deref().is_some_and(contains)
+            || item.graffiti.as_deref().is_some_and(contains))
         && (categories.is_empty()
             || item
                 .category

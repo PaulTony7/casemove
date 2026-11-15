@@ -53,6 +53,7 @@ hosts only). Enrichment is best-effort, never fails a login, and logs one
 
 | New command | Legacy channel(s) | Notes | Status |
 |---|---|---|---|
+| inventory search/filter/sort | `searchFilter` + `filterData` + `sortDataFunction` | `src/inventory.rs`, pinned by `src/inventory_golden.rs`: legacy fields plus collection and sticker names in search | ◐ |
 | `refresh_inventory() -> InventorySnapshot` | `refreshInventory` | Read-only GC welcome snapshot with string item IDs; retained client, 30s timeout, session-generation isolation. Retained GC client also streams SO create/update/remove deltas to the UI | ◐ |
 | `storage_contents(casket_id) -> Vec<Item>` | `getCasketContents` + `getCasketContent-reply` | Validates the ID against the loaded inventory, derives the expected count from attribute 270, and returns only notification-confirmed complete contents; errors return `Err` instead of `[0]` | ◐ |
 | `storage_add_item(casket_id, item_id, fast) -> MoveAck` | `moveToStorageUnit` + `-reply` | Acks on `itemCustomizationNotification(CasketAdded)` unless `fast`; 10s timeout lives in core | ◐ |
