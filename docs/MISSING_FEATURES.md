@@ -20,14 +20,18 @@ from the old app on purpose or by accident).
   not exist yet, so the banner cannot appear today.
 - **macOS and Linux packaging**, both Intel/Apple Silicon and generic Linux
   (AppImage/deb), including signing and notarization.
-- **Additional market providers.** Pricing uses the bundled snapshot overlaid
-  by the live Steam Market cache. Buff163/Float/Buff-style sources and a
-  provider picker are expansion work.
-- **Provider-specific rate limiting, caching, and fallback.**
+- **Buff163 and Float prices.** Buff163 answers every data endpoint with
+  `"请先登录"` (login required) and redirects its market pages to login, so
+  there is no anonymous source to read; Float is likewise account-gated. Only
+  the bundled snapshot's `buff163` column remains. Adding either would need a
+  user-supplied session cookie that breaks whenever the site changes.
 - **Item positions and equip operations.** The old app exposed them but never
   called them; neither is ported.
 
 ## Unverified (needs a real Steam account or platform)
+
+Run these with [VERIFICATION.md](VERIFICATION.md), which turns each item below
+into tickable steps (safe vs risky, per platform).
 
 - **Steam-close prompt on Windows.** Prompt, "Close and login", "Login without
   closing", and the "Dont show this again" latch are ported and tested offline,
@@ -76,8 +80,6 @@ from the old app on purpose or by accident).
   wanted.
 - **Unreachable storage sort.** `sort_rows("storage")` has no UI control;
   either add the column or delete the branch.
-- **Buff163/Float sources.** The old app's source picker selected `url = ''`;
-  decide whether a working provider replaces it or the picker stays out.
 
 ## Platform Notes
 

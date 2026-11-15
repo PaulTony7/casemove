@@ -1,8 +1,11 @@
-//! Price table (bundled legacy snapshot), source resolution, live Steam
-//! Market quotes, and USD formatting.
+//! Price table (bundled legacy snapshot), source resolution, live market
+//! quotes, and USD formatting.
 
 mod live;
-pub use live::{live_key, parse_priceoverview, LiveCache, PriceOverview, MAX_AGE_MS};
+pub use live::{
+    live_key, parse_csfloat_prices, parse_priceoverview, parse_skinport_prices, LiveCache,
+    Market, PriceOverview, MAX_AGE_MS,
+};
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -177,7 +180,7 @@ impl PriceTable {
 }
 
 /// The display price for a row: the bundled snapshot quote for `source`,
-/// overridden by a live Steam Market quote when the source is steam_listing.
+/// overridden by a live quote from the matching market.
 pub fn resolve(
     name: &str,
     wear: Option<&str>,
@@ -191,6 +194,22 @@ pub fn resolve(
         quote.steam_listing = Some(price);
     }
     quote.get(source)
+}
+
+/// The same resolution, but a `market` override applies to whichever column
+/// it belongs to: Steam Market quotes the listing price, Skinport and CSFloat
+/// have no bundled column of their own and are live-only.
+pub fn resolve_market(
+    name: &str,
+    wear: Option<&str>,
+    source: PriceSource,
+    market: Market,
+    live: Option<f64>,
+) -> Option<f64> {
+    if market != Market::Steam {
+        return live;
+    }
+    resolve(name, wear, source, live)
 }
 
 /// Formats USD the way legacy's `Intl.NumberFormat` did for the en-US
@@ -302,6 +321,15 @@ const CURRENCIES: &[(&str, &str, &str)] = &[
     ("MXN", "MX$", "es-MX"),
     ("NZD", "NZ$", "en-NZ"),
 ];
+
+/// The currencies the settings page shows first, with their symbols, in the
+/// order they are listed there.
+pub fn currency_common() -> Vec<(&'static str, &'static str)> {
+    CURRENCIES
+        .iter()
+        .map(|(code, symbol, ..)| (*code, symbol.trim()))
+        .collect()
+}
 
 /// Currency codes the settings page lists (legacy `currencyCode`, pruned to
 /// those the bundled rate table covers).
@@ -514,6 +542,15 @@ mod tests {
             assert!(codes.contains(&code), "{code}");
         }
         assert!(codes.len() > 50);
+    }
+
+    #[test]
+    fn common_currencies_lead_the_full_list() {
+        let common = currency_common();
+        let all = currency_codes();
+        assert_eq!(common.first(), Some(&("USD", "$")));
+        assert_eq!(common.len(), CURRENCIES.len());
+        assert!(common.iter().all(|(code, _)| all.contains(code)));
     }
 
     #[test]

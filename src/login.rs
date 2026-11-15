@@ -3,13 +3,20 @@ use crate::images;
 use crate::theme;
 use eframe::egui;
 
+/// The login column's comfortable width; it shrinks to fit narrower pages.
+const LOGIN_WIDTH: f32 = 384.0;
+/// The method tabs share one row down to this width, then wrap.
+const TAB_ROW_WIDTH: f32 = 320.0;
+
 pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     egui::ScrollArea::vertical()
         .id_salt("login-scroll")
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(32.0);
-                ui.set_max_width(384.0);
+                // The form never asks for more width than the page has; on a
+                // narrow window it simply fills it.
+                ui.set_max_width(LOGIN_WIDTH.min(ui.available_width()));
                 ui.label(egui::RichText::new("STEAM").size(22.0).strong());
                 ui.add_space(16.0);
                 if app.profile.is_some() {
@@ -87,33 +94,15 @@ fn session_details(ui: &mut egui::Ui, app: &mut CasemoveApp) {
 
 fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     let mut switch = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let tabs = [
-            (LoginMethod::Qr, "QR", egui_phosphor::regular::QR_CODE),
-            (
-                LoginMethod::WebToken,
-                "Webtoken",
-                egui_phosphor::regular::WIFI_HIGH,
-            ),
-            (
-                LoginMethod::Regular,
-                "Regular",
-                egui_phosphor::regular::LOCK_KEY,
-            ),
-        ];
-        for (method, name, glyph) in tabs {
-            let selected = app.method == method;
-            let enabled = !app.login_busy && !app.session_busy;
-            let label = format!("{glyph}  {name}");
-            if ui
-                .add_enabled(enabled, egui::Button::selectable(selected, label))
-                .clicked()
-            {
-                switch = Some(method);
-            }
-        }
-    });
+    let wrap = ui.available_width() < TAB_ROW_WIDTH;
+    if wrap {
+        ui.horizontal_wrapped(|ui| method_tabs(ui, app, &mut switch));
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            method_tabs(ui, app, &mut switch);
+        });
+    }
     if let Some(method) = switch {
         app.switch_method(method);
     }
@@ -186,6 +175,33 @@ fn login_form(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     }
 }
 
+fn method_tabs(ui: &mut egui::Ui, app: &CasemoveApp, switch: &mut Option<LoginMethod>) {
+    let tabs = [
+        (LoginMethod::Qr, "QR", egui_phosphor::regular::QR_CODE),
+        (
+            LoginMethod::WebToken,
+            "Webtoken",
+            egui_phosphor::regular::WIFI_HIGH,
+        ),
+        (
+            LoginMethod::Regular,
+            "Regular",
+            egui_phosphor::regular::LOCK_KEY,
+        ),
+    ];
+    for (method, name, glyph) in tabs {
+        let selected = app.method == method;
+        let enabled = !app.login_busy && !app.session_busy;
+        let label = format!("{glyph}  {name}");
+        if ui
+            .add_enabled(enabled, egui::Button::selectable(selected, label))
+            .clicked()
+        {
+            *switch = Some(method);
+        }
+    }
+}
+
 fn regular_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool, submit: &mut bool) {
     ui.add_enabled_ui(!busy, |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
@@ -220,18 +236,32 @@ fn regular_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool, submit: 
             );
         }
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
+        // Left/right layouts need room for both labels; on a narrow form the
+        // preferences stack instead of colliding.
+        let stacked = ui.available_width() < TAB_ROW_WIDTH;
+        if stacked {
             ui.checkbox(&mut app.form.remember, "Remember for later");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .checkbox(&mut app.form.show_secret, "Show secret field")
-                    .changed()
-                {
-                    app.form.guard_code.clear();
-                    app.form.shared_secret.clear();
-                }
+            if ui
+                .checkbox(&mut app.form.show_secret, "Show secret field")
+                .changed()
+            {
+                app.form.guard_code.clear();
+                app.form.shared_secret.clear();
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut app.form.remember, "Remember for later");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .checkbox(&mut app.form.show_secret, "Show secret field")
+                        .changed()
+                    {
+                        app.form.guard_code.clear();
+                        app.form.shared_secret.clear();
+                    }
+                });
             });
-        });
+        }
     });
 }
 
@@ -291,7 +321,10 @@ fn qr_fields(ui: &mut egui::Ui, app: &mut CasemoveApp, busy: bool) {
             .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
             .inner_margin(16.0)
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(203.0, 203.0));
+                ui.set_min_size(egui::vec2(
+                    203.0_f32.min(ui.available_width() - 32.0).max(80.0),
+                    203.0,
+                ));
                 ui.add_space(28.0);
                 ui.vertical_centered(|ui| {
                     ui.label(

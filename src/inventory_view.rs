@@ -631,6 +631,7 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
     };
 
     let mut refresh_prices = false;
+    let mut price_market: Option<pricing::Market> = None;
     {
         let view = match section {
             Section::Inventory => &mut app.view,
@@ -648,11 +649,16 @@ fn items_section(ui: &mut egui::Ui, app: &mut CasemoveApp, section: Section, use
             shortcuts,
             can_export: app.inventory.is_some() || app.storage_aggregate.is_some(),
             prices_busy: app.prices_busy,
+            market: app.price_market,
+            price_market: &mut price_market,
             export,
             refresh_prices: &mut refresh_prices,
         };
         command_bar(ui, view, table_id, majors, bar, column_edits);
         active_chips(ui, view);
+    }
+    if let Some(market) = price_market {
+        app.set_price_market(market);
     }
     if refresh_prices {
         app.refresh_live_prices(true);
@@ -826,6 +832,10 @@ struct CommandBar<'a> {
     shortcuts: &'a Shortcuts,
     can_export: bool,
     prices_busy: bool,
+    /// The market the shown prices came from, and the picker's result when
+    /// the user chooses another one.
+    market: pricing::Market,
+    price_market: &'a mut Option<pricing::Market>,
     export: &'a mut bool,
     refresh_prices: &'a mut bool,
 }
@@ -843,6 +853,8 @@ fn command_bar(
         shortcuts,
         can_export,
         prices_busy,
+        market,
+        price_market,
         export,
         refresh_prices,
     } = bar;
@@ -965,6 +977,28 @@ fn command_bar(
             if ui.add_enabled(!prices_busy, button).clicked() {
                 *refresh_prices = true;
             }
+            let source = egui::containers::menu::MenuButton::new(
+                egui::RichText::new(format!("{}  {}", egui_phosphor::regular::TAG, market.label()))
+                    .size(12.0),
+            );
+            let _ = source.ui(ui, |ui| {
+                ui.set_min_width(190.0);
+                for option in pricing::Market::ALL {
+                    let checked = option == market;
+                    let text = if checked {
+                        format!("{}  {}", egui_phosphor::regular::CHECK, option.label())
+                    } else {
+                        format!("    {}", option.label())
+                    };
+                    if ui
+                        .selectable_label(checked, text)
+                        .on_hover_text(option.basis())
+                        .clicked()
+                    {
+                        *price_market = Some(option);
+                    }
+                }
+            });
         });
     });
     ui.add_space(6.0);

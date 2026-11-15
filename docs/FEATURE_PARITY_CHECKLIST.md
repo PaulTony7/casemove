@@ -27,6 +27,9 @@ notes) is in [MISSING_FEATURES.md](MISSING_FEATURES.md).
 - Verify live item/sticker/image coverage and cached/bundled fallback. A few
   CSGO-API entries point at `raw.githubusercontent.com`; they are skipped on
   purpose because images load only from allowlisted Steam CDN hosts.
+- Verify Skinport and CSFloat quotes against the sites themselves for a handful
+  of items (CSFloat quotes its lowest listing, the others quote a median sale
+  price).
 
 ## Trade-Ups And Containers
 
@@ -56,5 +59,5 @@ notes) is in [MISSING_FEATURES.md](MISSING_FEATURES.md).
 
 ## Optional Expansion
 
-- Additional market providers and provider selection.
-- Provider-specific rate limiting, caching, and fallback behavior.
+- Buff163 and Float sources (blocked: both require a logged-in session; see
+  [MISSING_FEATURES.md](MISSING_FEATURES.md)).

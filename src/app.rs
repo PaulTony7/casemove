@@ -58,9 +58,14 @@ fn load_columns(
     (inventory, storage, sort, sort_desc)
 }
 
-/// Bounds for the persisted UI scale.
-const MIN_ZOOM: f32 = 0.6;
-const MAX_ZOOM: f32 = 3.0;
+/// Bounds for the persisted UI scale, and the step Ctrl +/- moves by.
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 2.0;
+const ZOOM_STEP: f32 = 0.1;
+
+/// Below this many logical points, the side panels fold away so the page
+/// (and the login form) keeps a usable width at high zoom.
+const NARROW_WIDTH: f32 = 760.0;
 
 #[derive(Default, Clone)]
 pub struct MoveLine {
@@ -208,13 +213,18 @@ pub struct CasemoveApp {
     pub overview_by: overview_view::OverviewBy,
     /// Display currency (legacy `pricing.currency`, default `USD`).
     pub currency_code: String,
+    /// The live market prices are taken from (see `pricing::Market`).
+    pub price_market: pricing::Market,
     pub currency: pricing::Currency,
     /// Legacy `steamLogin` preference: prompt to close Steam when it is open.
     pub show_steam_login: bool,
-    /// Legacy `devmode.value`: persisted only; legacy had no consumer either.
-    pub dev_mode: bool,
     /// Persisted sidebar width and the storage-contents batch size.
     pub sidebar_width: f32,
+    /// Whether the sidebar is folded down to its icon rail.
+    pub sidebar_collapsed: bool,
+    /// Whether the window was wide enough last frame, so the rail only
+    /// follows size changes rather than fighting a manual fold.
+    pub sidebar_fit: Option<bool>,
     /// Last persisted UI scale, so zooming is written once it settles.
     pub saved_zoom: f32,
     /// Account row currently being dragged to reorder the saved list.
@@ -297,13 +307,20 @@ impl CasemoveApp {
             .filter(|code| !code.trim().is_empty())
             .unwrap_or_else(|| "USD".to_owned());
         let show_steam_login = core.store_get::<bool>("steamLogin").unwrap_or(true);
-        let dev_mode = core.store_get::<bool>("devmode.value").unwrap_or(false);
+        let price_market = core
+            .store_get::<String>("pricing.market")
+            .map(|value| pricing::Market::from_stored(&value))
+            .unwrap_or_default();
         let zoom = core
             .store_get::<f32>("ui.zoom")
             .filter(|zoom| zoom.is_finite())
             .unwrap_or(1.0)
             .clamp(MIN_ZOOM, MAX_ZOOM);
-        cc.egui_ctx.options_mut(|options| options.zoom_factor = zoom);
+        cc.egui_ctx.options_mut(|options| {
+            options.zoom_factor = zoom;
+            // Ctrl +/- is handled below, clamped to MIN_ZOOM..=MAX_ZOOM.
+            options.zoom_with_keyboard = false;
+        });
         let (inventory_columns, storage_columns, sort, sort_desc) = load_columns(&core);
         let mut app = Self {
             core,
@@ -350,9 +367,11 @@ impl CasemoveApp {
             overview_by,
             currency: pricing::Currency::new(&currency_code),
             currency_code,
+            price_market,
             show_steam_login,
-            dev_mode,
             sidebar_width,
+            sidebar_collapsed: false,
+            sidebar_fit: None,
             saved_zoom: zoom,
             drag_account: None,
             inventory: None,
@@ -660,8 +679,9 @@ impl CasemoveApp {
                 self.prices_busy = false;
                 if !prices.is_empty() {
                     let now = now_ms();
+                    let market = self.price_market;
                     for (key, price) in prices {
-                        self.price_cache.insert(&key, price, now);
+                        self.price_cache.insert(&key, market, price, now);
                     }
                     let _ = self.price_cache.save(&prices_cache_path());
                     self.apply_live_prices();
@@ -1067,7 +1087,7 @@ impl CasemoveApp {
         }
         let keys: Vec<String> = keys
             .into_iter()
-            .filter(|key| force || !self.price_cache.fresh(key, now))
+            .filter(|key| force || !self.price_cache.fresh(key, self.price_market, now))
             .collect();
         if keys.is_empty() {
             self.apply_live_prices();
@@ -1075,8 +1095,11 @@ impl CasemoveApp {
         }
         self.prices_busy = true;
         let reply = self.reply.clone();
+        let market = self.price_market;
         self.rt.spawn(async move {
-            reply.send(Message::LivePrices(app_core::fetch_live_prices(keys).await));
+            reply.send(Message::LivePrices(
+                app_core::fetch_market_prices(market, keys).await,
+            ));
         });
     }
 
@@ -1084,29 +1107,29 @@ impl CasemoveApp {
     fn apply_live_prices(&mut self) {
         if let Some(snapshot) = &mut self.inventory {
             for item in &mut snapshot.items {
-                reprice(item, &self.price_cache);
+                reprice(item, &self.price_cache, self.price_market);
             }
         }
         for row in &mut self.grouped {
-            reprice(&mut row.representative, &self.price_cache);
+            reprice(&mut row.representative, &self.price_cache, self.price_market);
         }
         if let Some(items) = &mut self.storage_contents {
             for item in items {
-                reprice(item, &self.price_cache);
+                reprice(item, &self.price_cache, self.price_market);
             }
         }
         if let Some(items) = &mut self.storage_aggregate {
             for item in items {
-                reprice(item, &self.price_cache);
+                reprice(item, &self.price_cache, self.price_market);
             }
         }
         for items in self.storage_unit_contents.values_mut() {
             for item in items {
-                reprice(item, &self.price_cache);
+                reprice(item, &self.price_cache, self.price_market);
             }
         }
         for row in &mut self.storage_grouped {
-            reprice(&mut row.representative, &self.price_cache);
+            reprice(&mut row.representative, &self.price_cache, self.price_market);
         }
     }
 
@@ -1155,15 +1178,6 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists the legacy dev-mode toggle (`devmode.value`).
-    pub fn set_dev_mode(&mut self, value: bool) {
-        self.dev_mode = value;
-        let core = self.core.clone();
-        drop(self.rt.spawn_blocking(move || {
-            let _ = core.store_set("devmode.value", value);
-        }));
-    }
-
     /// Persists the Steam-close popup preference.
     pub fn save_steam_login(&self) {
         let core = self.core.clone();
@@ -1181,6 +1195,20 @@ impl CasemoveApp {
         let value = self.currency_code.clone();
         drop(self.rt.spawn_blocking(move || {
             let _ = core.store_set("pricing.currency", value);
+        }));
+    }
+
+    /// Changes the live price source: cached quotes re-resolve immediately
+    /// and the next refresh fetches from the new market.
+    pub fn set_price_market(&mut self, market: pricing::Market) {
+        if self.price_market == market {
+            return;
+        }
+        self.price_market = market;
+        let core = self.core.clone();
+        let value = market.as_str();
+        drop(self.rt.spawn_blocking(move || {
+            let _ = core.store_set("pricing.market", value);
         }));
     }
 
@@ -1241,7 +1269,15 @@ impl CasemoveApp {
         }));
     }
 
-    /// Persists the UI scale so zoom survives a restart.
+    /// Applies a new UI scale immediately and persists it, staying inside the
+    /// 100–200% band the settings page offers.
+    pub fn set_zoom(&mut self, ctx: &egui::Context, zoom: f32) {
+        let zoom = ((zoom.clamp(MIN_ZOOM, MAX_ZOOM) * 100.0).round() / 100.0).max(MIN_ZOOM);
+        self.saved_zoom = zoom;
+        ctx.set_zoom_factor(zoom);
+        self.save_zoom(zoom);
+    }
+
     /// Persists the UI scale so zoom survives a restart.
     pub fn save_zoom(&self, zoom: f32) {
         let core = self.core.clone();
@@ -1922,6 +1958,24 @@ impl CasemoveApp {
 
 impl eframe::App for CasemoveApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // egui's own keyboard zoom is off so the shortcuts stay inside the
+        // band the settings page offers.
+        let zoom_in = ctx.input_mut(|input| {
+            input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN)
+                || input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY)
+        });
+        let zoom_out = ctx
+            .input_mut(|input| input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_OUT));
+        let zoom_reset = ctx
+            .input_mut(|input| input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET));
+        if zoom_reset {
+            self.set_zoom(ctx, 1.0);
+        } else if zoom_in {
+            self.set_zoom(ctx, ctx.zoom_factor() + ZOOM_STEP);
+        } else if zoom_out {
+            self.set_zoom(ctx, ctx.zoom_factor() - ZOOM_STEP);
+        }
+
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -1938,55 +1992,49 @@ impl eframe::App for CasemoveApp {
             )
             .show(ctx, |ui| self.status_bar(ui));
 
-        let sidebar = egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(self.sidebar_width)
-            .width_range(184.0..=320.0)
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::SURFACE)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
-                    .inner_margin(egui::Margin {
-                        left: 14,
-                        right: 14,
-                        top: 18,
-                        bottom: 14,
-                    }),
-            )
-            .show(ctx, |ui| self.sidebar(ui));
-        self.persist_sidebar_width(sidebar.response.rect.width(), ctx);
+        // On a narrow window (a small one, or a high zoom) the full sidebar
+        // would squeeze the page — and the login form — into a sliver, so it
+        // folds down to its icon rail. A change the user makes by hand decides
+        // for them until the window changes size again.
+        let wide = ctx.available_rect().width() >= NARROW_WIDTH;
+        if self.sidebar_fit != Some(wide) {
+            self.sidebar_collapsed = !wide;
+        }
+        self.sidebar_fit = Some(wide);
 
-        // The saved scale is applied during construction above; Cmd+/-/0 are
-        // handled by egui itself and land in the options at the end of the
-        // pass that consumed them, so the write below lags one frame at most.
+        {
+            let sidebar = egui::SidePanel::left("sidebar")
+                .resizable(!self.sidebar_collapsed)
+                .default_width(self.sidebar_width)
+                .width_range(if self.sidebar_collapsed {
+                    56.0..=56.0
+                } else {
+                    184.0..=320.0
+                })
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::SURFACE)
+                        .stroke(egui::Stroke::new(1.0_f32, theme::SEPARATOR))
+                        .inner_margin(egui::Margin {
+                            left: 14,
+                            right: 14,
+                            top: 18,
+                            bottom: 14,
+                        }),
+                )
+                .show(ctx, |ui| self.sidebar(ui));
+            if !self.sidebar_collapsed {
+                self.persist_sidebar_width(sidebar.response.rect.width(), ctx);
+            }
+        }
+
+        // The saved scale is applied during construction above; Ctrl+/-/0 are
+        // handled below and land in the options at the end of the pass that
+        // consumed them, so the write here lags one frame at most.
         let zoom = ctx.zoom_factor();
         if (zoom - self.saved_zoom).abs() > 0.001 {
             self.saved_zoom = zoom;
             self.save_zoom(zoom);
-        }
-
-        // The account list belongs to the home/login screen; a restored page
-        // is only shown while signed in, so mirror the central panel.
-        let on_page = self.profile.is_some()
-            && (self.inventory_open
-                || self.overview_open
-                || self.storage_open
-                || self.trade_up_open);
-        if !on_page {
-            egui::SidePanel::right("saved-accounts")
-                .resizable(false)
-                .exact_width(272.0)
-                .frame(
-                    egui::Frame::NONE
-                        .fill(theme::SURFACE)
-                        .inner_margin(egui::Margin {
-                            left: 12,
-                            right: 12,
-                            top: 20,
-                            bottom: 16,
-                        }),
-                )
-                .show(ctx, |ui| self.accounts_panel(ui));
         }
 
         egui::CentralPanel::default()
@@ -2340,6 +2388,10 @@ impl CasemoveApp {
 
 impl CasemoveApp {
     fn sidebar(&mut self, ui: &mut egui::Ui) {
+        if self.sidebar_collapsed {
+            self.sidebar_rail(ui);
+            return;
+        }
         ui.horizontal(|ui| {
             if let Some(brand) = &self.brand {
                 ui.add(
@@ -2366,7 +2418,27 @@ impl CasemoveApp {
                 .profile
                 .as_ref()
                 .and_then(|profile| profile.avatar_url.clone());
-            images::avatar(ui, &mut self.images, avatar_url.as_deref(), 32.0);
+            // The fold control lives on the avatar and only shows on hover, so
+            // the header keeps a single, quiet row.
+            let before = ui.cursor().min;
+            images::avatar(ui, &mut self.images, avatar_url.as_deref(), 28.0);
+            let slot = egui::Rect::from_min_size(before, egui::vec2(28.0, 28.0));
+            let hover = ui
+                .ctx()
+                .pointer_latest_pos()
+                .is_some_and(|pos| slot.contains(pos));
+            if hover {
+                let overlay = egui::Button::new(
+                    egui::RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE)
+                        .size(15.0)
+                        .color(theme::TEXT_STRONG),
+                )
+                .fill(egui::Color32::from_black_alpha(160))
+                .corner_radius(egui::CornerRadius::same(14));
+                if ui.put(slot, overlay).on_hover_text("Fold the sidebar").clicked() {
+                    self.sidebar_collapsed = true;
+                }
+            }
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(profile_display_name(self.profile.clone())).size(13.0),
@@ -2389,6 +2461,25 @@ impl CasemoveApp {
             });
         });
         ui.add_space(16.0);
+
+        // The saved-account shortcuts belong to the home/login screen, so
+        // they live here rather than in a second side column.
+        let on_page = self.profile.is_some()
+            && (self.inventory_open
+                || self.overview_open
+                || self.storage_open
+                || self.trade_up_open);
+        if !on_page {
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Saved accounts")
+                    .size(theme::MUTED_SIZE)
+                    .color(theme::MUTED),
+            )
+            .id_salt("sidebar-saved-accounts")
+            .default_open(true)
+            .show(ui, |ui| self.accounts_panel(ui));
+            ui.add_space(12.0);
+        }
 
         let nav: [(&str, &str, &'static str); 5] = [
             ("Overview", egui_phosphor::regular::CHART_LINE, "overview"),
@@ -2506,6 +2597,77 @@ impl CasemoveApp {
     }
 
     // --- status strip -------------------------------------------------------
+
+    /// The folded sidebar: just the brand, the account avatar, the page icons
+    /// and the way back to the full panel, with names on hover.
+    fn sidebar_rail(&mut self, ui: &mut egui::Ui) {
+        let avatar_url = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.avatar_url.clone());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let before = ui.cursor().min;
+            images::avatar(ui, &mut self.images, avatar_url.as_deref(), 28.0);
+            let slot = egui::Rect::from_min_size(before, egui::vec2(28.0, 28.0));
+            let hover = ui
+                .ctx()
+                .pointer_latest_pos()
+                .is_some_and(|pos| slot.contains(pos));
+            if hover {
+                let overlay = egui::Button::new(
+                    egui::RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE)
+                        .size(15.0)
+                        .color(theme::TEXT_STRONG),
+                )
+                .fill(egui::Color32::from_black_alpha(160))
+                .corner_radius(egui::CornerRadius::same(14));
+                if ui
+                    .put(slot, overlay)
+                    .on_hover_text("Expand the sidebar")
+                    .clicked()
+                {
+                    self.sidebar_collapsed = false;
+                }
+            }
+        });
+        ui.add_space(16.0);
+
+        let nav: [(&str, &str, &'static str); 5] = [
+            ("Overview", egui_phosphor::regular::CHART_LINE, "overview"),
+            ("Inventory", egui_phosphor::regular::ARCHIVE, "inventory"),
+            ("Storage", egui_phosphor::regular::VAULT, "storage"),
+            (
+                "Trade-ups",
+                egui_phosphor::regular::ARROWS_CLOCKWISE,
+                "tradeup",
+            ),
+            ("Settings", egui_phosphor::regular::GEAR, "settings"),
+        ];
+        for (name, glyph, key) in nav {
+            let current = match key {
+                "overview" => self.overview_open,
+                "inventory" => self.inventory_open,
+                "storage" => self.storage_open,
+                "tradeup" => self.trade_up_open,
+                _ => self.settings_open,
+            };
+            let enabled = key == "settings" || (self.profile.is_some() && !self.session_busy);
+            let button = egui::Button::new(egui::RichText::new(glyph).size(16.0))
+                .min_size(egui::vec2(30.0, 30.0));
+            let response = ui.add_enabled(enabled, button.selected(current));
+            if response.clicked() {
+                self.overview_open = key == "overview";
+                self.inventory_open = key == "inventory";
+                self.storage_open = key == "storage";
+                self.settings_open = key == "settings";
+                self.trade_up_open = key == "tradeup";
+            }
+            let tip = if enabled { name.to_owned() } else { format!("{name} — sign in to Steam first") };
+            response.on_hover_text(tip);
+            ui.add_space(4.0);
+        }
+    }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let mut first = true;
@@ -2626,21 +2788,13 @@ impl CasemoveApp {
     // --- saved accounts ---------------------------------------------------
 
     fn accounts_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        if !self.accounts.is_empty() {
             ui.label(
-                egui::RichText::new("SAVED ACCOUNTS")
-                    .size(11.0)
-                    .strong()
+                egui::RichText::new(format!("{} saved", self.accounts.len()))
+                    .size(theme::MUTED_SIZE)
                     .color(theme::MUTED),
             );
-            if !self.accounts.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("· {}", self.accounts.len()))
-                        .size(11.0)
-                        .color(theme::MUTED),
-                );
-            }
-        });
+        }
         ui.add_space(8.0);
 
         if self.loading {
@@ -3246,17 +3400,18 @@ fn reveal(path: &std::path::Path) {
     }
 }
 
-/// Re-resolves one row's price: the bundled snapshot overridden by any live
-/// quote in the cache.
-fn reprice(item: &mut InventoryItem, cache: &pricing::LiveCache) {
+/// Re-resolves one row's price: the bundled snapshot for Steam Market, or a
+/// live quote from the selected market.
+fn reprice(item: &mut InventoryItem, cache: &pricing::LiveCache, market: pricing::Market) {
     if !item.moveable {
         return;
     }
     let key = pricing::live_key(&item.name, item.wear_name.as_deref());
-    item.price = pricing::resolve(
+    item.price = pricing::resolve_market(
         &item.name,
         item.wear_name.as_deref(),
         pricing::PriceSource::SteamListing,
-        cache.price(&key),
+        market,
+        cache.price(&key, market),
     );
 }

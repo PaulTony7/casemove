@@ -13,7 +13,7 @@ gc-cs2 = { path = "../gc-cs2" }
 item-schema = { path = "../item-schema" }
 domain = { path = "../domain" }
 pricing = { path = "../pricing" }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "query"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "query", "brotli"] }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tokio-stream = "0.1"
 zeroize = "1"

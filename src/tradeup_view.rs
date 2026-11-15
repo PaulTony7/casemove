@@ -496,11 +496,16 @@ fn sidebar_panel(ui: &mut egui::Ui, app: &mut CasemoveApp) {
         .iter()
         .map(|item| item.price.unwrap_or(0.0))
         .sum();
+    let cache = &app.price_cache;
+    let market = app.price_market;
     let expected_value: f64 = app
         .trade_up
         .outcomes
         .iter()
-        .map(|outcome| trade_up_outcome_price(outcome).unwrap_or(0.0) * (outcome.percentage / 100.0))
+        .map(|outcome| {
+            trade_up_outcome_price(outcome, cache, market).unwrap_or(0.0)
+                * (outcome.percentage / 100.0)
+        })
         .sum();
     summary_row(ui, "Cost", &app.money(total_price), theme::ERROR_STRONG);
     summary_row(ui, "Expected value", &app.money(expected_value), theme::GREEN);
@@ -531,7 +536,7 @@ fn sidebar_panel(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     // Legacy sorts by profit per outcome (`profit_cal`), best first.
     outcomes.sort_by(|left, right| {
         let profit = |outcome: &Outcome| {
-            let price = trade_up_outcome_price(outcome).unwrap_or(0.0);
+            let price = trade_up_outcome_price(outcome, cache, market).unwrap_or(0.0);
             if total_price > 0.0 {
                 price / total_price * 100.0
             } else {
@@ -544,17 +549,23 @@ fn sidebar_panel(ui: &mut egui::Ui, app: &mut CasemoveApp) {
     });
     egui::ScrollArea::vertical().id_salt("trade-up-outcomes").show(ui, |ui| {
         for outcome in &outcomes {
-            outcome_row(ui, &mut app.images, outcome, total_price);
+            outcome_row(ui, &mut app.images, outcome, total_price, cache, market);
         }
     });
 }
 
-fn trade_up_outcome_price(outcome: &Outcome) -> Option<f64> {
-    pricing::resolve(
+fn trade_up_outcome_price(
+    outcome: &Outcome,
+    cache: &pricing::LiveCache,
+    market: pricing::Market,
+) -> Option<f64> {
+    let key = pricing::live_key(&outcome.name, Some(outcome.wear_name));
+    pricing::resolve_market(
         &outcome.name,
         Some(outcome.wear_name),
         pricing::PriceSource::SteamListing,
-        None,
+        market,
+        cache.price(&key, market),
     )
 }
 
@@ -567,8 +578,15 @@ fn summary_row(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32
     });
 }
 
-fn outcome_row(ui: &mut egui::Ui, images: &mut ImageCache, outcome: &Outcome, cost: f64) {
-    let price = trade_up_outcome_price(outcome).unwrap_or(0.0);
+fn outcome_row(
+    ui: &mut egui::Ui,
+    images: &mut ImageCache,
+    outcome: &Outcome,
+    cost: f64,
+    cache: &pricing::LiveCache,
+    market: pricing::Market,
+) {
+    let price = trade_up_outcome_price(outcome, cache, market).unwrap_or(0.0);
     let profit = if cost > 0.0 { price / cost * 100.0 } else { 0.0 };
     egui::Frame::NONE
         .fill(theme::CARD)

@@ -13,7 +13,7 @@ mod update;
 pub use accounts::initialize_store;
 pub use connection::{reconnect, spawn as spawn_connection_monitor};
 pub use inventory::InventoryState;
-pub use prices::fetch_live_prices;
+pub use prices::{fetch_live_prices, fetch_market_prices};
 pub use schema::SchemaRefreshReport;
 pub use update::{UpdateStatus, check as check_update};
 
