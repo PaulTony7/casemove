@@ -7,6 +7,16 @@ codebase.
 Motivation: maintainability/modularity, reliability bug fixes, modernized stack,
 performance, and first-class support for Steam + third-party market APIs.
 
+## Licensing baseline (2026-11-16)
+
+The retained legacy reference is GPL-era commit
+`4c7cfc920120203785ec579581cfb6be851e4ab6`, not later upstream revisions
+licensed CC BY-NC-ND. The two later bundled schema/translation snapshots have
+been restored to that baseline. Application source now targets GPL version 3
+or later; third-party rights and complete release obligations remain under
+review. This is a source-guided port, not a clean-room rewrite. See
+[BUILDING.md](BUILDING.md#license-and-gpl-era-provenance) and [NOTICE](../NOTICE).
+
 ## Current Progress (2026-11-14)
 
 The Rust rewrite has reached feature parity on every page; the remaining work

@@ -1,0 +1,29 @@
+Casemove Rust rewrite
+
+The original Casemove application was created by Nombers.
+Upstream: https://github.com/nombersDev/casemove
+
+Retained legacy-derived material is based on the GPL-era revision
+4c7cfc920120203785ec579581cfb6be851e4ab6 (2024-02-12). Its README grants
+GPL version 3 or, at the recipient's option, any later version. The root
+LICENSE reproduces that revision's GNU GPL version 3 text.
+
+This application modifies the original implementation into a Rust native
+application. Rewrite contributions and these licensing changes were made
+in 2026. This is a source-guided port, not a clean-room implementation.
+Original contributors retain their rights; no upstream endorsement is implied.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+Third-party dependencies, fonts, images and datasets retain their own
+applicable rights and licenses. The historical GPL grant does not establish
+permissions for material the upstream authors did not own. See
+docs/BUILDING.md for provenance, audit limitations and release requirements.

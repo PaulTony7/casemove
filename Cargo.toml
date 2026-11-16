@@ -2,6 +2,7 @@
 name = "casemove-ui"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 eframe = "0.33.3"
@@ -25,6 +26,9 @@ winresource = "0.1"
 
 [workspace]
 members = ["crates/*"]
+
+[workspace.package]
+license = "GPL-3.0-or-later"
 
 [profile.release]
 codegen-units = 1

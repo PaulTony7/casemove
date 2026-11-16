@@ -82,6 +82,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut CasemoveApp) {
                 ui.checkbox(&mut steam_login, "");
             },
         );
+
+        ui.add_space(16.0);
+        egui::CollapsingHeader::new("License and credits").show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("license_credits")
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    ui.label(include_str!("../NOTICE"));
+                });
+            ui.hyperlink_to("GNU GPL version 3", "https://www.gnu.org/licenses/gpl-3.0.html");
+        });
     });
 
     if currency != app.currency_code {

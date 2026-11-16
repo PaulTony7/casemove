@@ -29,7 +29,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           stage="casemove-${version}-linux-x86_64"
           mkdir -p "dist/${stage}/usr/bin" "dist/${stage}/usr/share/applications" \
-            "dist/${stage}/usr/share/icons/hicolor/256x256/apps"
+            "dist/${stage}/usr/share/icons/hicolor/256x256/apps" \
+            "dist/${stage}/usr/share/doc/casemove"
+          install -m 644 LICENSE NOTICE "dist/${stage}/usr/share/doc/casemove/"
           install -m 755 target/release/casemove-ui "dist/${stage}/usr/bin/casemove"
           install -m 644 assets/casemove.desktop \
             "dist/${stage}/usr/share/applications/casemove.desktop"
@@ -79,6 +81,7 @@ jobs:
           New-Item -ItemType Directory -Path "dist/$stage" -Force | Out-Null
           Copy-Item target/release/casemove-ui.exe "dist/$stage/casemove.exe"
           Copy-Item LICENSE "dist/$stage/LICENSE"
+          Copy-Item NOTICE "dist/$stage/NOTICE"
           Compress-Archive -Path "dist/$stage/*" -DestinationPath "dist/$stage.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -97,6 +100,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           app="dist/Casemove.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp LICENSE NOTICE "$app/Contents/Resources/"
           install -m 755 target/release/casemove-ui "$app/Contents/MacOS/casemove"
           cp assets/casemove.icns "$app/Contents/Resources/casemove.icns"
           cat > "$app/Contents/Info.plist" <<EOF

@@ -10,7 +10,8 @@ fn main() {
     resource.set_icon("assets/casemove.ico");
     resource.set("ProductName", "Casemove");
     resource.set("FileDescription", "CS2 storage-unit and trade-up manager");
-    resource.set("LegalCopyright", "MIT licensed");
+    resource.set("LegalCopyright", "Casemove contributors; see NOTICE");
+    resource.set("Comments", "GPL-3.0-or-later; see LICENSE and NOTICE");
     if let Err(error) = resource.compile() {
         // A missing resource compiler should not fail the build; the app just
         // ships without the embedded icon.
